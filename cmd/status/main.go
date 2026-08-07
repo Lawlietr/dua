@@ -289,6 +289,9 @@ func runJSONMode() {
 		os.Exit(1)
 	}
 
+	data.Version = version
+	data.Commit = commit
+
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(data); err != nil {

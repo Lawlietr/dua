@@ -11,6 +11,8 @@ import (
 )
 
 type jsonOutput struct {
+	Version    string          `json:"version"`
+	Commit     string          `json:"commit"`
 	Path       string          `json:"path"`
 	Overview   bool            `json:"overview"`
 	Entries    []jsonEntry     `json:"entries"`
@@ -37,6 +39,8 @@ type jsonFileEntry struct {
 
 func runJSONMode(path string, isOverview bool) {
 	result := performScanForJSON(path, isOverview)
+	result.Version = version
+	result.Commit = commit
 
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")

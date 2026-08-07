@@ -60,6 +60,8 @@ func (rb *RingBuffer) Slice() []float64 {
 }
 
 type MetricsSnapshot struct {
+	Version        string       `json:"version"`
+	Commit         string       `json:"commit"`
 	CollectedAt    time.Time    `json:"collected_at"`
 	Host           string       `json:"host"`
 	Platform       string       `json:"platform"`

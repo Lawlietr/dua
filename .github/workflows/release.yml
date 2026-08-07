@@ -27,10 +27,12 @@ jobs:
           GOOS: linux
           GOARCH: ${{ matrix.arch }}
           CGO_ENABLED: "0"
+          VERSION: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
         run: |
           mkdir -p bin
-          go build -trimpath -ldflags="-s -w" -o bin/dua-analyze ./cmd/analyze
-          go build -trimpath -ldflags="-s -w" -o bin/dua-status ./cmd/status
+          go build -trimpath -ldflags="-s -w -X 'main.version=$VERSION' -X 'main.commit=$COMMIT'" -o bin/dua-analyze ./cmd/analyze
+          go build -trimpath -ldflags="-s -w -X 'main.version=$VERSION' -X 'main.commit=$COMMIT'" -o bin/dua-status ./cmd/status
       - name: Package tarball
         run: |
           mkdir -p stage dist
@@ -57,6 +59,7 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           name: dua ${{ github.ref_name }}
+          generate_release_notes: true
           body: |
             dua ${{ github.ref_name }}
 
