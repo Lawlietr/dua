@@ -25,7 +25,7 @@ case "$ARCH" in
 esac
 
 mkdir -p ~/.local/bin
-curl -fsSL "https://github.com/Lawlietr/Mole/releases/latest/download/dua-linux-${ARCH}.tar.gz" | tar -xz -C ~/.local/bin
+curl -fsSL "https://github.com/Lawlietr/dua/releases/latest/download/dua-linux-${ARCH}.tar.gz" | tar -xz -C ~/.local/bin
 
 export PATH="$HOME/.local/bin:$PATH"
 dua status --json
@@ -37,8 +37,8 @@ dua status --json
 
 ```bash
 cd /tmp
-curl -fsSL "https://github.com/Lawlietr/Mole/releases/latest/download/dua-linux-${ARCH}.tar.gz" -o dua.tar.gz
-curl -fsSL "https://github.com/Lawlietr/Mole/releases/latest/download/dua-linux-${ARCH}.tar.gz.sha256" -o dua.tar.gz.sha256
+curl -fsSL "https://github.com/Lawlietr/dua/releases/latest/download/dua-linux-${ARCH}.tar.gz" -o dua.tar.gz
+curl -fsSL "https://github.com/Lawlietr/dua/releases/latest/download/dua-linux-${ARCH}.tar.gz.sha256" -o dua.tar.gz.sha256
 sha256sum -c dua.tar.gz.sha256
 tar -xzf dua.tar.gz -C ~/.local/bin
 ```

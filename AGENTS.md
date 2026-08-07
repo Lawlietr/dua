@@ -75,7 +75,7 @@ Public docs and examples should prefer the installed `dua` command. Use `./dua` 
 - Spotlight (`mdfind`) integration is macOS-only and guarded by `runtime.GOOS == "darwin"`. The walk-based collector is the Linux large-file source.
 - Overview roots and insight paths are platform-aware (`systemOverviewRoots`, `createInsightEntries`). Linux uses `/usr`, `/opt`, `/var`, `/home` and XDG cache paths (`~/.cache`, `~/.npm`, `~/.local/share/Trash`, ...).
 - Keep shell code minimal; the `dua` router is the only shell surface. Format with `./scripts/check.sh --format` only if scripts exist; there is none today.
-- Keep the module path as `github.com/tw93/dua`. The GitHub repo lives at `Lawlietr/Mole`, so `go install` is intentionally unsupported; the supported install paths are the GitHub Release tarballs (curl) and `make build`. If `go install` support is ever wanted, update `go.mod` and the two `github.com/tw93/dua/internal/units` imports (`cmd/analyze/format.go`, `cmd/status/view.go`) in the same change.
+- Keep the module path as `github.com/Lawlietr/dua`, matching the GitHub repo. The supported install paths are the GitHub Release tarballs (curl) and `make build`. `go install github.com/Lawlietr/dua/cmd/analyze@<tag>` works but installs binaries named `analyze`/`status` (not `dua-analyze`/`dua-status`), so the curl tarball remains the canonical install for the `dua` router.
 - Do not add AI attribution trailers to commits.
 
 ### Testing Notes

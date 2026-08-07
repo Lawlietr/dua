@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tw93/dua/internal/units"
+	"github.com/Lawlietr/dua/internal/units"
 )
 
 func displayPath(path string) string {

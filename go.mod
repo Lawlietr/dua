@@ -1,4 +1,4 @@
-module github.com/tw93/dua
+module github.com/Lawlietr/dua
 
 go 1.25.0
 
