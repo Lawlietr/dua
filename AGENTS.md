@@ -46,8 +46,10 @@ If the answer is no or unclear, decline the feature, narrow it, or park it until
 - `internal/units/` - shared byte formatting.
 - `bin/` - build output directory (gitignored); `dua-analyze` and `dua-status` live here after `make build`.
 - `Makefile` - Linux-only build/test entrypoints. `CGO_ENABLED=0`, `-trimpath`, `-s -w`.
+- `go.mod` - pins `toolchain go1.25.10`. Both workflows read `go-version-file: go.mod`, so a toolchain bump here updates CI and release builds together.
 - `.github/workflows/` - CI and release pipelines. `test.yml` runs vet + tests on Linux-DEV/main pushes and pull requests. `release.yml` is tag-driven (see Versioning).
-- `README.md` (English) and `README.zh-TW.md` (Traditional Chinese) are the user-facing docs; keep them in sync when behaviour or install instructions change.
+- `.github/dependabot.yml` - weekly dependency-update PRs for `gomod` + `github-actions`; minor/patch updates are grouped to reduce noise.
+- `README.md` (English) and `README.zh-TW.md` (Traditional Chinese) are the user-facing docs; keep them in sync when behaviour or install instructions change — the two are translations of the same document, so headings and section order must match.
 
 Platform-specific files in `cmd/analyze/` carry explicit build tags (`atime_linux.go`, `atime_darwin.go`). The darwin files are preserved so the binaries still cross-compile, but Linux is the supported runtime.
 
@@ -90,6 +92,7 @@ Public docs and examples should prefer the installed `dua` command. Use `./dua` 
 ## Versioning
 
 - Releases are tag-driven: pushing a `v*` tag triggers `.github/workflows/release.yml`, which builds `dua-analyze`/`dua-status` for linux/amd64 and linux/arm64, packages flat tarballs (`dua`, `dua-analyze`, `dua-status`) with sha256 checksums, and creates a GitHub Release. `releases/latest` serves the newest tag.
+- Commits to `main`/`Linux-DEV` do NOT rebuild the distributed binaries: `releases/latest` only changes when a `v*` tag is pushed. A security fix must ship as a patch release (e.g. `v0.1.2`) so users downloading via curl get the fixed binaries.
 - Version numbers: bump the patch (`v0.x.y`) for fixes, docs, and project-level chores; bump the minor (`v0.y.0`) only for new features or behavior changes; reserve `v1.0.0` for a stability promise. Do not bump the minor for chores.
 
 ## Hotspot Ownership
@@ -105,6 +108,7 @@ These files are intentionally large. Do not start by splitting them. Keep edits 
 ## Verification
 
 - Go changes: run `gofmt -l cmd/ internal/` (must be empty), then `go test ./...` and `go vet ./...`.
+- Security: after dependency or toolchain changes, run `go run golang.org/x/vuln/cmd/govulncheck@latest ./...` and confirm 0 reachable vulnerabilities before committing.
 - Cleanup behavior: not applicable — dua is read-only. If a change adds modification behavior, stop and re-read the Product Direction.
 - Documentation-only changes: check links and commands.
 - Manual verification: `./dua status --json`, `./dua analyze --json /some/path`, `./dua analyze` and `./dua status` TUI smoke tests (run under a pseudo-TTY if not attached).
