@@ -6,8 +6,6 @@ updates:
       interval: "weekly"
     labels:
       - "dependencies"
-    reviewers:
-      - "tw93"
     open-pull-requests-limit: 10
     groups:
       github-actions:
@@ -20,6 +18,4 @@ updates:
       interval: "weekly"
     labels:
       - "dependencies"
-    reviewers:
-      - "tw93"
     open-pull-requests-limit: 10
