@@ -224,6 +224,10 @@ func (m model) View() string {
 		cpuCores = smallerCPUCores(cpuCores)
 		output = renderFrame(cpuCores)
 	}
+	versionBar := renderVersionBar(m.width)
+	if versionBar != "" {
+		output = lipgloss.JoinVertical(lipgloss.Left, output, versionBar)
+	}
 	return padViewToHeight(output, m.height)
 }
 

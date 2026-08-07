@@ -320,6 +320,11 @@ func (m model) View() string {
 			fmt.Fprintf(&b, "%s↑↓←→ | Enter | / Filter | R Refresh | O Open | P Preview | F File | Esc Back | Q/Ctrl+C Quit%s\n", colorGray, colorReset)
 		}
 	}
+	versionText := fmt.Sprintf("%s (%s)", version, commit)
+	if m.width > 0 {
+		pad := strings.Repeat(" ", max(m.width-len(versionText), 0))
+		fmt.Fprintf(&b, "%s%s%s%s\n", colorGray, pad, versionText, colorReset)
+	}
 	return b.String()
 }
 
