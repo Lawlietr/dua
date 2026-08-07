@@ -46,6 +46,8 @@ If the answer is no or unclear, decline the feature, narrow it, or park it until
 - `internal/units/` - shared byte formatting.
 - `bin/` - build output directory (gitignored); `dua-analyze` and `dua-status` live here after `make build`.
 - `Makefile` - Linux-only build/test entrypoints. `CGO_ENABLED=0`, `-trimpath`, `-s -w`.
+- `.github/workflows/` - CI and release pipelines. `test.yml` runs vet + tests on Linux-DEV/main pushes and pull requests. `release.yml` is tag-driven (see Versioning).
+- `README.md` (English) and `README.zh-TW.md` (Traditional Chinese) are the user-facing docs; keep them in sync when behaviour or install instructions change.
 
 Platform-specific files in `cmd/analyze/` carry explicit build tags (`atime_linux.go`, `atime_darwin.go`). The darwin files are preserved so the binaries still cross-compile, but Linux is the supported runtime.
 
@@ -85,6 +87,11 @@ Public docs and examples should prefer the installed `dua` command. Use `./dua` 
 - Never pipe a test, check, or CI run into `tail` or `head`. The pipeline reports the pager's exit code, so a red run reads green. Let it print in full, or capture to a file and check the status separately.
 - Prefer targeted `go test ./cmd/analyze` / `go test ./cmd/status` during development; run `go test ./...` before committing.
 
+## Versioning
+
+- Releases are tag-driven: pushing a `v*` tag triggers `.github/workflows/release.yml`, which builds `dua-analyze`/`dua-status` for linux/amd64 and linux/arm64, packages flat tarballs (`dua`, `dua-analyze`, `dua-status`) with sha256 checksums, and creates a GitHub Release. `releases/latest` serves the newest tag.
+- Version numbers: bump the patch (`v0.x.y`) for fixes, docs, and project-level chores; bump the minor (`v0.y.0`) only for new features or behavior changes; reserve `v1.0.0` for a stability promise. Do not bump the minor for chores.
+
 ## Hotspot Ownership
 
 These files are intentionally large. Do not start by splitting them. Keep edits narrow and run the listed tests when touching each area.
@@ -101,5 +108,6 @@ These files are intentionally large. Do not start by splitting them. Keep edits 
 - Cleanup behavior: not applicable — dua is read-only. If a change adds modification behavior, stop and re-read the Product Direction.
 - Documentation-only changes: check links and commands.
 - Manual verification: `./dua status --json`, `./dua analyze --json /some/path`, `./dua analyze` and `./dua status` TUI smoke tests (run under a pseudo-TTY if not attached).
+- Release changes: validate the workflow YAML and simulate the flat-tarball packaging step locally; real builds and Release creation require a `v*` tag push.
 
 `make build` and `make check` are wrappers around the commands above.
