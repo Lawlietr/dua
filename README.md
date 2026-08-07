@@ -66,10 +66,9 @@ cp bin/dua-analyze bin/dua-status /usr/local/bin/
 
 Environment: `DUA_ANALYZE_PATH` sets the scan target when no PATH is given; `DUA_ANALYZE_LIVE_SORT` selects the live-scan sort mode.
 
-### `dua status`
+### `dua version`
 
-- TUI dashboard by default; `--json` for one-shot JSON; `--watch [--interval 2s]` streams newline-delimited JSON.
-- Flags: `--proc-cpu-threshold`, `--proc-cpu-window`, `--proc-cpu-alerts` tune the high-CPU process alert.
+Shows version and commit information.
 
 ## How it Works
 

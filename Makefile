@@ -18,7 +18,9 @@ ANALYZE_SRC := ./cmd/analyze
 STATUS_SRC := ./cmd/status
 
 # Build flags
-LDFLAGS := -s -w
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "unknown")
+COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+LDFLAGS := -s -w -X 'main.version=$(VERSION)' -X 'main.commit=$(COMMIT)'
 
 all: build
 

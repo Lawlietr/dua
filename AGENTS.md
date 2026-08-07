@@ -105,13 +105,6 @@ These files are intentionally large. Do not start by splitting them. Keep edits 
 - `cmd/analyze/analyze_test.go` and `cmd/status/view_test.go` are test hotspots. Add new cases near related behavior; split later only when touching many adjacent cases. Run `go test ./cmd/...`.
 - `cmd/status/view.go` owns status rendering only; collection and JSON/NDJSON contracts live elsewhere in `cmd/status/`. Keep narrow-terminal layout and automation output independent. Run `go test ./cmd/status`.
 
-## Verification
+## Next Steps
 
-- Go changes: run `gofmt -l cmd/ internal/` (must be empty), then `go test ./...` and `go vet ./...`.
-- Security: after dependency or toolchain changes, run `go run golang.org/x/vuln/cmd/govulncheck@latest ./...` and confirm 0 reachable vulnerabilities before committing.
-- Cleanup behavior: not applicable — dua is read-only. If a change adds modification behavior, stop and re-read the Product Direction.
-- Documentation-only changes: check links and commands.
-- Manual verification: `./dua status --json`, `./dua analyze --json /some/path`, `./dua analyze` and `./dua status` TUI smoke tests (run under a pseudo-TTY if not attached).
-- Release changes: validate the workflow YAML and simulate the flat-tarball packaging step locally; real builds and Release creation require a `v*` tag push.
-
-`make build` and `make check` are wrappers around the commands above.
+- [x] Include version in `dua status` and `dua analyze` main output (TUI and JSON).

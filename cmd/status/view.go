@@ -209,6 +209,15 @@ func renderBanner(style lipgloss.Style, text string, width int) string {
 	return style.Render(text)
 }
 
+func renderVersionBar(width int) string {
+	if width <= 0 {
+		return ""
+	}
+	text := fmt.Sprintf("%s (%s)", version, commit)
+	pad := strings.Repeat(" ", max(width-lipgloss.Width(text), 0))
+	return subtleStyle.Render(pad + text)
+}
+
 func renderCPUCard(cpu CPUStatus, thermal ThermalStatus, cpuCores int) cardData {
 	var lines []string
 

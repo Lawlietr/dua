@@ -16,11 +16,18 @@ import (
 )
 
 var (
-	jsonMode = flag.Bool("json", false, "output analysis as JSON instead of TUI")
+	jsonMode = flag.Bool("json", false, "output analysis as JSON instead of TUI") 
+	version  = "dev"
+	commit   = "none"
 )
 
 func main() {
 	flag.Parse()
+	if flag.NArg() > 0 && flag.Arg(0) == "version" {
+		fmt.Printf("dua version %s\n", version)
+		fmt.Printf("Commit: %s\n", commit)
+		os.Exit(0)
+	}
 
 	abs, isOverview, err := resolveScanTarget(os.Getenv("DUA_ANALYZE_PATH"), flag.Args())
 	if err != nil {
