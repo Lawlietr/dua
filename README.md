@@ -10,21 +10,24 @@
 
 dua is a terminal-first Linux inspection toolkit with two read-only commands, forked from the macOS Mole CLI's `analyze` and `status` and re-scoped as an independent project. It shows where disk space went and how healthy the machine is — from a CLI, script, or compact TUI. It **never deletes or modifies user data**: there is no cleanup surface anywhere in the codebase.
 
-## Features
+## Installation
 
-- **`dua analyze`** — visual disk explorer:
-  - System overview (`/usr`, `/opt`, `/var`, `/home`) plus hidden-space insights (npm, Go build, pip, Gradle, JetBrains caches, Trash, old Downloads)
-  - Drill-down navigation with per-directory bars and last-access hints
-  - Top-files (T) view, live scan feedback with cursor sort modes, and a disk-usage cache
-  - `--json` output for automation
-- **`dua status`** — compact health dashboard:
-  - CPU, memory, disk, thermal (hwmon), hardware model, OS info, and top processes
-  - High-CPU process alerts
-  - `--json` for one-shot automation and `--watch` for NDJSON streams
+### Binary install (curl)
 
-## Quick Start
+Prebuilt Linux binaries (amd64 and arm64) are built by GitHub Actions. No sudo needed — installed to `~/.local/bin`:
 
-Build and run:
+```bash
+mkdir -p ~/.local/bin
+curl -fsSL "https://github.com/Lawlietr/dua/releases/latest/download/dua-linux-$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/').tar.gz" | tar -xz -C ~/.local/bin
+export PATH="$HOME/.local/bin:$PATH"
+dua status --json
+```
+
+Add `~/.local/bin` to your `PATH` (usually in `~/.bashrc` or `~/.zshrc`) to make it permanent.
+
+### Build from source
+
+Requires Go 1.25+:
 
 ```bash
 make build
@@ -39,6 +42,18 @@ Install the binaries to a location on your `PATH`:
 ```bash
 cp bin/dua-analyze bin/dua-status /usr/local/bin/
 ```
+
+## Features
+
+- **`dua analyze`** — visual disk explorer:
+  - System overview (`/usr`, `/opt`, `/var`, `/home`) plus hidden-space insights (npm, Go build, pip, Gradle, JetBrains caches, Trash, old Downloads)
+  - Drill-down navigation with per-directory bars and last-access hints
+  - Top-files (T) view, live scan feedback with cursor sort modes, and a disk-usage cache
+  - `--json` output for automation
+- **`dua status`** — compact health dashboard:
+  - CPU, memory, disk, thermal (hwmon), hardware model, OS info, and top processes
+  - High-CPU process alerts
+  - `--json` for one-shot automation and `--watch` for NDJSON streams
 
 ## Commands
 

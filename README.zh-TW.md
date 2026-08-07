@@ -14,34 +14,16 @@ dua 是一套終端機優先的 Linux 檢視工具，提供兩個唯讀命令，
 
 ### 二進制安裝（curl）
 
-由 GitHub Actions 為 Linux 建置，支援 x86_64（amd64）與 ARM64（aarch64）。不需 sudo，安裝到 `~/.local/bin`：
+由 GitHub Actions 為 Linux 建置（amd64 與 arm64）。不需 sudo，安裝到 `~/.local/bin`：
 
 ```bash
-ARCH=$(uname -m)
-case "$ARCH" in
-  x86_64) ARCH=amd64 ;;
-  aarch64|arm64) ARCH=arm64 ;;
-  *) echo "不支援的架構: $ARCH" >&2; exit 1 ;;
-esac
-
 mkdir -p ~/.local/bin
-curl -fsSL "https://github.com/Lawlietr/dua/releases/latest/download/dua-linux-${ARCH}.tar.gz" | tar -xz -C ~/.local/bin
-
+curl -fsSL "https://github.com/Lawlietr/dua/releases/latest/download/dua-linux-$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/').tar.gz" | tar -xz -C ~/.local/bin
 export PATH="$HOME/.local/bin:$PATH"
 dua status --json
 ```
 
-確認 `~/.local/bin` 在 `PATH` 中（通常加進 `~/.bashrc` 或 `~/.zshrc`）即可永久使用。
-
-驗證下載完整性（SHA-256）：
-
-```bash
-cd /tmp
-curl -fsSL "https://github.com/Lawlietr/dua/releases/latest/download/dua-linux-${ARCH}.tar.gz" -o dua.tar.gz
-curl -fsSL "https://github.com/Lawlietr/dua/releases/latest/download/dua-linux-${ARCH}.tar.gz.sha256" -o dua.tar.gz.sha256
-sha256sum -c dua.tar.gz.sha256
-tar -xzf dua.tar.gz -C ~/.local/bin
-```
+將 `~/.local/bin` 加入 `PATH`（通常加進 `~/.bashrc` 或 `~/.zshrc`）即可永久使用。
 
 ### 從原始碼建置
 
