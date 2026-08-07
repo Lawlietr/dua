@@ -17,10 +17,7 @@ dua 是一套終端機優先的 Linux 檢視工具，提供兩個唯讀命令，
 由 GitHub Actions 為 Linux 建置（amd64 與 arm64）。不需 sudo，安裝到 `~/.local/bin`：
 
 ```bash
-mkdir -p ~/.local/bin
-curl -fsSL "https://github.com/Lawlietr/dua/releases/latest/download/dua-linux-$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/').tar.gz" | tar -xz -C ~/.local/bin
-export PATH="$HOME/.local/bin:$PATH"
-dua status --json
+curl -fsSL "https://raw.githubusercontent.com/Lawlietr/dua/main/scripts/install.sh" | bash
 ```
 
 將 `~/.local/bin` 加入 `PATH`（通常加進 `~/.bashrc` 或 `~/.zshrc`）即可永久使用。

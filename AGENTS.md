@@ -105,11 +105,13 @@ These files are intentionally large. Do not start by splitting them. Keep edits 
 - `cmd/analyze/analyze_test.go` and `cmd/status/view_test.go` are test hotspots. Add new cases near related behavior; split later only when touching many adjacent cases. Run `go test ./cmd/...`.
 - `cmd/status/view.go` owns status rendering only; collection and JSON/NDJSON contracts live elsewhere in `cmd/status/`. Keep narrow-terminal layout and automation output independent. Run `go test ./cmd/status`.
 
+## Architecture Note
+
+dua currently ships as **three files**: a bash router (`dua`) plus two Go binaries (`dua-analyze`, `dua-status`). The router dispatches to the appropriate binary based on the subcommand. This is intentional and documented in the Repository Map above.
+
+A single-binary design (one `dua` executable with subcommands) would be cleaner from a user's perspective, but would require merging `cmd/analyze` and `cmd/status` into a single `main.go` with subcommand handling (e.g. via `flag` or a CLI library). This is not currently planned but worth keeping in mind if the project grows.
+
 ## Next Steps
 
 - [x] Include version in `dua status` and `dua analyze` main output (TUI).
-<<<<<<< HEAD
-- [ ] Include version in `dua status` and `dua analyze` JSON output.
-=======
 - [x] Include version in `dua status` and `dua analyze` JSON output.
->>>>>>> origin/main

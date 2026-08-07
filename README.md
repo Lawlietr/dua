@@ -17,10 +17,7 @@ dua is a terminal-first Linux inspection toolkit with two read-only commands, fo
 Prebuilt Linux binaries (amd64 and arm64) are built by GitHub Actions. No sudo needed — installed to `~/.local/bin`:
 
 ```bash
-mkdir -p ~/.local/bin
-curl -fsSL "https://github.com/Lawlietr/dua/releases/latest/download/dua-linux-$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/').tar.gz" | tar -xz -C ~/.local/bin
-export PATH="$HOME/.local/bin:$PATH"
-dua status --json
+curl -fsSL "https://raw.githubusercontent.com/Lawlietr/dua/main/scripts/install.sh" | bash
 ```
 
 Add `~/.local/bin` to your `PATH` (usually in `~/.bashrc` or `~/.zshrc`) to make it permanent.
