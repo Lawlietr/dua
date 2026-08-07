@@ -66,10 +66,9 @@ cp bin/dua-analyze bin/dua-status /usr/local/bin/
 
 環境變數：`DUA_ANALYZE_PATH` 在未指定 PATH 時設定掃描目標；`DUA_ANALYZE_LIVE_SORT` 選擇即時掃描排序模式。
 
-### `dua status`
+### `dua version`
 
-- 預設為 TUI 儀表板；`--json` 單次 JSON；`--watch [--interval 2s]` 輸出換行分隔的 JSON。
-- 旗標：`--proc-cpu-threshold`、`--proc-cpu-window`、`--proc-cpu-alerts` 調整高 CPU 程序警示。
+顯示版本與提交資訊。
 
 ## 運作原理
 

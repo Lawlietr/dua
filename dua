@@ -39,6 +39,9 @@ case "${1:-}" in
     "status")
         run_bin dua-status "${@:2}"
         ;;
+    "version")
+        run_bin dua-status version
+        ;;
     "-h" | "--help" | "")
         cat <<'EOF'
 dua - disk analysis and system status for Linux
@@ -46,6 +49,7 @@ dua - disk analysis and system status for Linux
 Usage:
   dua analyze [PATH]   Visual disk explorer (reads only, no cleanup)
   dua status           Live system health dashboard
+  dua version           Show version and commit info
   dua help             Show this help
 
 Run 'dua <command> --help' for command-specific flags.
@@ -58,10 +62,12 @@ dua - disk analysis and system status for Linux
 Commands:
   analyze [PATH]   Visual disk explorer. No PATH scans the machine overview.
   status           Live system health dashboard (TUI, --json, --watch).
+  version           Show version and commit info.
 
 Run 'dua analyze --help' or 'dua status --help' for command-specific flags.
 EOF
         ;;
+
     *)
         echo "dua: unknown command '$1'" >&2
         echo "Run 'dua help' for usage." >&2
