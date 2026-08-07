@@ -50,6 +50,7 @@ If the answer is no or unclear, decline the feature, narrow it, or park it until
 - `.github/workflows/` - CI and release pipelines. `test.yml` runs vet + tests on Linux-DEV/main pushes and pull requests. `release.yml` is tag-driven (see Versioning).
 - `.github/dependabot.yml` - weekly dependency-update PRs for `gomod` + `github-actions`; minor/patch updates are grouped to reduce noise.
 - `README.md` (English) and `README.zh-TW.md` (Traditional Chinese) are the user-facing docs; keep them in sync when behaviour or install instructions change — the two are translations of the same document, so headings and section order must match.
+- `docs/windows-todo.md` — Windows (win64) porting investigation for `dua analyze`. Refer to this when working on the `win64` branch; the main branches remain Linux-only.
 
 Platform-specific files in `cmd/analyze/` carry explicit build tags (`atime_linux.go`, `atime_darwin.go`). The darwin files are preserved so the binaries still cross-compile, but Linux is the supported runtime.
 
