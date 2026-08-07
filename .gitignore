@@ -42,13 +42,22 @@ cmd/analyze/analyze
 cmd/status/status
 /status
 /analyze
-# Go binaries
-bin/dua-analyze
-bin/dua-status
+# Go build output (make build)
+bin/
+
+# Go workspace and tooling files
+go.work
+go.work.sum
+*.test
+*.prof
 
 # Go test coverage files
 *.out
 coverage.out
 coverage.html
+
+# Cross-platform OS junk files
+.DS_Store
+Thumbs.db
 
 session.json
