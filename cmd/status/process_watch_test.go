@@ -29,8 +29,8 @@ func TestRunCmdForcesCLocale(t *testing.T) {
 }
 
 func TestCollectProcessesUnderCommaLocale(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("ps output format is darwin-specific")
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("ps is not exercised on this platform")
 	}
 	t.Setenv("LC_ALL", "ru_RU.UTF-8")
 	t.Setenv("LC_NUMERIC", "ru_RU.UTF-8")

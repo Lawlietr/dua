@@ -1,11 +1,10 @@
-//go:build darwin
-
 package main
 
 import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -74,13 +73,27 @@ func isHandledByMoClean(path string) bool {
 	return false
 }
 
-var moCleanHandledPathFragments = []string{
-	"/Library/Caches/",
-	"/Library/Logs/",
-	"/Library/Saved Application State/",
-	"/.Trash/",
-	"/Library/DiagnosticReports/",
-}
+// moCleanHandledPathFragments names the system-managed cache/log/trash roots a
+// general cleanup tool would act on. dua has no cleanup commands, but the hint
+// marker must not advertise these wholesale directories as user-cleanable, so
+// the markers stay on the platform's actual managed roots instead.
+var moCleanHandledPathFragments = func() []string {
+	if runtime.GOOS == "linux" {
+		return []string{
+			"/.cache/",
+			"/.local/share/Trash/",
+			"/.local/state/",
+			"/var/log/",
+		}
+	}
+	return []string{
+		"/Library/Caches/",
+		"/Library/Logs/",
+		"/Library/Saved Application State/",
+		"/.Trash/",
+		"/Library/DiagnosticReports/",
+	}
+}()
 
 // Project dependency and build directories.
 var projectDependencyDirs = map[string]bool{

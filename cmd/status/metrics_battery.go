@@ -343,6 +343,9 @@ func getSystemPowerOutput() string {
 
 func collectThermal() ThermalStatus {
 	if runtime.GOOS != "darwin" {
+		if runtime.GOOS == "linux" {
+			return collectLinuxThermal()
+		}
 		return ThermalStatus{}
 	}
 
@@ -377,6 +380,61 @@ func collectThermal() ThermalStatus {
 	// Do not synthesize CPU temperature from battery sensors or cpu_thermal_level.
 	// Those values are not CPU-package temperatures and produce false overheating data.
 	return thermal
+}
+
+// collectLinuxThermal reads CPU/GPU package temperatures from hwmon. Sensor
+// values are in millidegrees Celsius; labels identify package/edge sensors so a
+// single core is never mistaken for the package reading. Absent sensors leave
+// the fields at zero rather than synthesizing a value.
+func collectLinuxThermal() ThermalStatus {
+	var thermal ThermalStatus
+
+	devices, err := filepath.Glob("/sys/class/hwmon/hwmon*")
+	if err != nil {
+		return thermal
+	}
+	for _, dev := range devices {
+		name := strings.ToLower(strings.TrimSpace(readFirstLine(filepath.Join(dev, "name"))))
+		cpuDev := strings.Contains(name, "coretemp") || strings.Contains(name, "k10temp") ||
+			strings.Contains(name, "zenpower") || strings.Contains(name, "cpu")
+		gpuDev := strings.Contains(name, "amdgpu") || strings.Contains(name, "nouveau") ||
+			strings.Contains(name, "nvidia")
+
+		temps, err := filepath.Glob(filepath.Join(dev, "temp*_input"))
+		if err != nil {
+			continue
+		}
+		for _, input := range temps {
+			label := strings.ToLower(strings.TrimSpace(readFirstLine(strings.TrimSuffix(input, "input") + "label")))
+			deg := float64(readIntFile(input)) / 1000.0
+			if deg <= 0 || deg > 125 {
+				continue
+			}
+			if cpuDev && (label == "" || strings.Contains(label, "package") || strings.Contains(label, "tctl") ||
+				strings.Contains(label, "tdie") || strings.Contains(label, "cpu") || strings.Contains(label, "core")) {
+				if deg > thermal.CPUTemp {
+					thermal.CPUTemp = deg
+				}
+			}
+			if gpuDev && (label == "" || strings.Contains(label, "edge") || strings.Contains(label, "junction") ||
+				strings.Contains(label, "gpu") || strings.Contains(label, "mem")) {
+				if deg > thermal.GPUTemp {
+					thermal.GPUTemp = deg
+				}
+			}
+		}
+	}
+	return thermal
+}
+
+// readIntFile parses a file as a decimal integer, returning 0 on any error.
+func readIntFile(path string) int {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(strings.TrimSpace(string(data)))
+	return n
 }
 
 func parseAppleSmartBatteryThermal(out string) ThermalStatus {

@@ -1,5 +1,3 @@
-//go:build darwin
-
 package main
 
 import (
@@ -9,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -23,7 +22,7 @@ var (
 func main() {
 	flag.Parse()
 
-	abs, isOverview, err := resolveScanTarget(os.Getenv("MO_ANALYZE_PATH"), flag.Args())
+	abs, isOverview, err := resolveScanTarget(os.Getenv("DUA_ANALYZE_PATH"), flag.Args())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -102,8 +101,6 @@ func newModel(path string, isOverview bool) model {
 		cache:               make(map[string]historyEntry),
 		overviewSizeCache:   make(map[string]int64),
 		overviewScanningSet: make(map[string]bool),
-		multiSelected:       make(map[string]bool),
-		largeMultiSelected:  make(map[string]bool),
 		liveSortMode:        liveScanSortModeFromEnv(),
 	}
 
@@ -160,6 +157,14 @@ func createOverviewEntriesWithInsights(insightEntries []dirEntry) []dirEntry {
 }
 
 func systemOverviewRoots() []dirEntry {
+	if runtime.GOOS == "linux" {
+		return []dirEntry{
+			{Name: "System (usr)", Path: "/usr", IsDir: true, Size: -1},
+			{Name: "Optional (opt)", Path: "/opt", IsDir: true, Size: -1},
+			{Name: "Variables (var)", Path: "/var", IsDir: true, Size: -1},
+			{Name: "Home", Path: "/home", IsDir: true, Size: -1},
+		}
+	}
 	return []dirEntry{
 		{Name: "Applications", Path: "/Applications", IsDir: true, Size: -1},
 		{Name: "System Library", Path: "/Library", IsDir: true, Size: -1},
@@ -200,19 +205,18 @@ func safeOpen(path string, reveal bool) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), openCommandTimeout)
 	defer cancel()
-	args := []string{path}
 	if reveal {
-		args = []string{"-R", path}
+		return exec.CommandContext(ctx, "xdg-open", filepath.Dir(path)).Run()
 	}
-	return exec.CommandContext(ctx, "open", args...).Run()
+	return exec.CommandContext(ctx, "xdg-open", path).Run()
 }
 
-// safePreview opens the file with the default macOS application.
+// safePreview opens the file with the default desktop application.
 func safePreview(path string) error {
 	if err := validatePath(path); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), openCommandTimeout)
 	defer cancel()
-	return exec.CommandContext(ctx, "open", path).Run()
+	return exec.CommandContext(ctx, "xdg-open", path).Run()
 }

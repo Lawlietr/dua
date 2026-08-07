@@ -1,5 +1,3 @@
-//go:build darwin
-
 package main
 
 import (
@@ -263,20 +261,20 @@ func loadOverviewCachedSize(path string) (int64, error) {
 	return cacheEntry.TotalSize, nil
 }
 
-// moleCacheRoot is the single definition of the shared cache location; both
+// duaCacheRoot is the single definition of the shared cache location; both
 // accessors below build on it so the layout is stated once.
-func moleCacheRoot(home string) string {
-	return filepath.Join(home, ".cache", "mole")
+func duaCacheRoot(home string) string {
+	return filepath.Join(home, ".cache", "dua")
 }
 
-// getMoleCacheRoot is the shared `~/.cache/mole` directory. The shell side
-// keeps its own state files there, so nothing may be swept from it wholesale.
-func getMoleCacheRoot() (string, error) {
+// getDuaCacheRoot is the shared `~/.cache/dua` directory. The analyzer only
+// owns its subdirectory, so nothing may be swept from the root wholesale.
+func getDuaCacheRoot() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return moleCacheRoot(home), nil
+	return duaCacheRoot(home), nil
 }
 
 // resolvedCacheDir memoizes the analyzer cache directory together with the HOME
@@ -307,7 +305,7 @@ func getCacheDir() (string, error) {
 		return resolved.dir, resolved.err
 	}
 
-	dir := filepath.Join(moleCacheRoot(home), analyzerCacheDirName)
+	dir := filepath.Join(duaCacheRoot(home), analyzerCacheDirName)
 	resolved := &resolvedCacheDir{home: home, dir: dir}
 	if mkErr := os.MkdirAll(dir, 0755); mkErr != nil {
 		resolved.dir, resolved.err = "", mkErr
@@ -384,7 +382,7 @@ func (h *oldestFirstHeap) Pop() any {
 func pruneAnalyzerCache() {
 	// Best-effort throughout; errors are ignored so startup never blocks on
 	// cache housekeeping.
-	if root, err := getMoleCacheRoot(); err == nil {
+	if root, err := getDuaCacheRoot(); err == nil {
 		_ = sweepLegacyAnalyzerCache(root)
 	}
 	cacheDir, err := getCacheDir()
@@ -491,9 +489,9 @@ func pruneAnalyzerCacheDirWithLimits(cacheDir string, now time.Time, maxEntries 
 }
 
 // sweepLegacyAnalyzerCache removes the flat `<hash>.cache` entries the analyzer
-// used to write directly into `~/.cache/mole`, plus the overview snapshot that
-// sat beside them. Everything else in that directory belongs to the shell side
-// and is left alone.
+// used to write directly into `~/.cache/dua`, plus the overview snapshot that
+// sat beside them. Everything else in that directory belongs to other users
+// of the shared root and is left alone.
 //
 // The sweep streams the directory rather than reading it whole, so a legacy
 // store with millions of entries is never held in memory, and it is resumable:

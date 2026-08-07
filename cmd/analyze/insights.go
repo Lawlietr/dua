@@ -1,5 +1,3 @@
-//go:build darwin
-
 package main
 
 import (
@@ -22,17 +20,6 @@ func createInsightEntries() []dirEntry {
 
 	var entries []dirEntry
 
-	// iOS Backups: ~/Library/Application Support/MobileSync/Backup
-	backupPath := filepath.Join(home, "Library", "Application Support", "MobileSync", "Backup")
-	if info, err := os.Stat(backupPath); err == nil && info.IsDir() {
-		entries = append(entries, dirEntry{
-			Name:  "iOS Backups",
-			Path:  backupPath,
-			IsDir: true,
-			Size:  -1,
-		})
-	}
-
 	// Old Downloads: ~/Downloads (files older than 90 days)
 	downloadsPath := filepath.Join(home, "Downloads")
 	if info, err := os.Stat(downloadsPath); err == nil && info.IsDir() {
@@ -44,39 +31,23 @@ func createInsightEntries() []dirEntry {
 		})
 	}
 
-	// Cleanable paths: things mo clean can remove or the user can safely delete.
-	// System Caches (~Library/Caches) is intentionally omitted here because the
-	// specific cache subdirectories below are already its children; listing both
-	// would double-count the same bytes.
+	// Cleanable paths: rebuildable caches the user can safely delete.
+	// The general cache root (~/.cache) is intentionally omitted here because
+	// the specific cache subdirectories below are already its children;
+	// listing both would double-count the same bytes.
 	cleanablePaths := []struct {
 		name string
 		path string
 	}{
 		// Universal (everyone has these)
-		{"System Logs", filepath.Join(home, "Library", "Logs")},
-		{"Homebrew Cache", filepath.Join(home, "Library", "Caches", "Homebrew")},
-
-		// Developer-specific (only shown if path exists)
-		{"Xcode DerivedData", filepath.Join(home, "Library", "Developer", "Xcode", "DerivedData")},
-		{"Xcode Simulators", filepath.Join(home, "Library", "Developer", "CoreSimulator", "Devices")},
-		{"Xcode Archives", filepath.Join(home, "Library", "Developer", "Xcode", "Archives")},
-		{"Spotify Cache", filepath.Join(home, "Library", "Application Support", "Spotify", "PersistentCache")},
-		{"JetBrains Cache", filepath.Join(home, "Library", "Caches", "JetBrains")},
-		{"Docker Data", filepath.Join(home, "Library", "Containers", "com.docker.docker", "Data")},
-		{"pip Cache", filepath.Join(home, "Library", "Caches", "pip")},
+		{"System Logs", filepath.Join(home, ".local", "share", "logs")},
+		{"Trash", filepath.Join(home, ".local", "share", "Trash")},
+		{"pip Cache", filepath.Join(home, ".cache", "pip")},
+		{"Go Build Cache", filepath.Join(home, ".cache", "go-build")},
+		{"JetBrains Cache", filepath.Join(home, ".cache", "JetBrains")},
 		{"Gradle Cache", filepath.Join(home, ".gradle", "caches")},
-		{"CocoaPods Cache", filepath.Join(home, "Library", "Caches", "CocoaPods")},
-	}
-	if matches, err := filepath.Glob(filepath.Join(home, "Library", "Group Containers", "*dev.orbstack", "data")); err == nil {
-		for _, match := range matches {
-			if info, statErr := os.Stat(match); statErr == nil && info.IsDir() {
-				cleanablePaths = append(cleanablePaths, struct {
-					name string
-					path string
-				}{"OrbStack Data", match})
-				break
-			}
-		}
+		{"npm Cache", filepath.Join(home, ".npm", "_cacache")},
+		{"Rust Cargo Registry", filepath.Join(home, ".cargo", "registry")},
 	}
 	for _, c := range cleanablePaths {
 		if info, err := os.Stat(c.path); err == nil && info.IsDir() {

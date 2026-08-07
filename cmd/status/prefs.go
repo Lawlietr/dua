@@ -1,7 +1,7 @@
 // Package main: status preferences store.
 //
 // Persisted preferences live in a tiny `key=value` file (one pair per line) at
-// ~/.config/mole/status_prefs. This file replaces the previous single-value
+// ~/.config/dua/status_prefs. This file replaces the previous single-value
 // implementation, which compared the whole file against one exact string and so
 // could only ever hold a single preference. The map-based store below lets any
 // number of preferences coexist: writing one key preserves all the others.
@@ -25,7 +25,7 @@ func getConfigPath() string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".config", "mole", "status_prefs")
+	return filepath.Join(home, ".config", "dua", "status_prefs")
 }
 
 // loadPrefs reads the preferences file into a map. A missing or unreadable file
@@ -139,16 +139,6 @@ func writePrefsAtomically(path string, data []byte) error {
 }
 
 // Typed accessors: the rest of the code speaks in bools/ints, not raw strings.
-
-// loadCatHidden reports whether the ASCII cat should be hidden.
-func loadCatHidden() bool {
-	return loadPrefs()["cat_hidden"] == "true"
-}
-
-// saveCatHidden persists the cat visibility preference.
-func saveCatHidden(hidden bool) {
-	savePref("cat_hidden", strconv.FormatBool(hidden))
-}
 
 // cpuCoresCycle is the sequence the 'c' key steps through. 0 means "all cores".
 // The default (first entry) is 2, matching the historical hard-coded behaviour.

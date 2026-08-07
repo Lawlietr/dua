@@ -1,5 +1,3 @@
-//go:build darwin
-
 package main
 
 import (
@@ -11,6 +9,7 @@ import (
 )
 
 func TestPerformScanForJSONIncludesAllEntriesAndLargeFiles(t *testing.T) {
+	skipIfBlockAccountingUnreliable(t)
 	root := t.TempDir()
 
 	totalFiles := maxEntries + 6

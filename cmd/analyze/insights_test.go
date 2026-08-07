@@ -1,10 +1,9 @@
-//go:build darwin
-
 package main
 
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -35,6 +34,9 @@ func TestCreateInsightEntries(t *testing.T) {
 }
 
 func TestCreateInsightEntriesIncludesOrbStackData(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("OrbStack Data insight is macOS-only")
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 

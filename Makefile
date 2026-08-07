@@ -1,6 +1,6 @@
-# Makefile for Mole
+# Makefile for dua
 
-.PHONY: all build clean check format test test-go verify release release-amd64 release-arm64 mod-download
+.PHONY: all build check clean test test-go vet mod-download
 
 # Output directory
 BIN_DIR := bin
@@ -10,8 +10,8 @@ GO ?= go
 GO_DOWNLOAD_RETRIES ?= 3
 
 # Binaries
-ANALYZE := analyze
-STATUS := status
+ANALYZE := dua-analyze
+STATUS := dua-status
 
 # Source directories
 ANALYZE_SRC := ./cmd/analyze
@@ -19,7 +19,6 @@ STATUS_SRC := ./cmd/status
 
 # Build flags
 LDFLAGS := -s -w
-RELEASE_GO_ENV := CGO_ENABLED=0
 
 all: build
 
@@ -40,35 +39,17 @@ mod-download:
 # Local build (current architecture)
 build: mod-download
 	@echo "Building for local architecture..."
-	$(GO) build -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(ANALYZE)-go $(ANALYZE_SRC)
-	$(GO) build -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(STATUS)-go $(STATUS_SRC)
+	CGO_ENABLED=0 $(GO) build -trimpath -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(ANALYZE) $(ANALYZE_SRC)
+	CGO_ENABLED=0 $(GO) build -trimpath -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(STATUS) $(STATUS_SRC)
 
-check:
-	./scripts/check.sh --no-format
+check: vet test-go
 
-format:
-	./scripts/check.sh --format
-
-test:
-	MOLE_TEST_NO_AUTH=1 ./scripts/test.sh
+vet:
+	$(GO) vet ./...
 
 test-go:
 	$(GO) test ./...
 
-verify: check test-go
-
-# Release build targets. Keep these pure-Go so the macOS SDK on the
-# release runner cannot raise the Mach-O minimum OS version via cgo.
-release-amd64: mod-download
-	@echo "Building release binaries (amd64)..."
-	$(RELEASE_GO_ENV) GOOS=darwin GOARCH=amd64 $(GO) build -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(ANALYZE)-darwin-amd64 $(ANALYZE_SRC)
-	$(RELEASE_GO_ENV) GOOS=darwin GOARCH=amd64 $(GO) build -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(STATUS)-darwin-amd64 $(STATUS_SRC)
-
-release-arm64: mod-download
-	@echo "Building release binaries (arm64)..."
-	$(RELEASE_GO_ENV) GOOS=darwin GOARCH=arm64 $(GO) build -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(ANALYZE)-darwin-arm64 $(ANALYZE_SRC)
-	$(RELEASE_GO_ENV) GOOS=darwin GOARCH=arm64 $(GO) build -ldflags="$(LDFLAGS)" -o $(BIN_DIR)/$(STATUS)-darwin-arm64 $(STATUS_SRC)
-
 clean:
 	@echo "Cleaning binaries..."
-	rm -f $(BIN_DIR)/$(ANALYZE)-* $(BIN_DIR)/$(STATUS)-* $(BIN_DIR)/$(ANALYZE)-go $(BIN_DIR)/$(STATUS)-go
+	rm -f $(BIN_DIR)/$(ANALYZE) $(BIN_DIR)/$(STATUS)

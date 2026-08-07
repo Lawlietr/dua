@@ -549,23 +549,39 @@ func scanTrashSize() (uint64, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	var total uint64
-	trashPath := filepath.Join(home, ".Trash")
-	_ = filepath.WalkDir(trashPath, func(_ string, d fs.DirEntry, err error) error {
-		if ctx.Err() != nil {
-			return fs.SkipAll
-		}
-		if err != nil {
-			return nil
-		}
-		if d.Type()&fs.ModeSymlink != 0 {
-			return nil
-		}
-		if !d.IsDir() {
-			if info, err := d.Info(); err == nil {
-				total += uint64(info.Size())
+	for _, trashPath := range trashPathsForPlatform(home) {
+		_ = filepath.WalkDir(trashPath, func(_ string, d fs.DirEntry, err error) error {
+			if ctx.Err() != nil {
+				return fs.SkipAll
 			}
-		}
-		return nil
-	})
+			if err != nil {
+				return nil
+			}
+			if d.Type()&fs.ModeSymlink != 0 {
+				return nil
+			}
+			if !d.IsDir() {
+				if info, err := d.Info(); err == nil {
+					total += uint64(info.Size())
+				}
+			}
+			return nil
+		})
+	}
 	return total, ctx.Err() != nil
+}
+
+// trashPathsForPlatform returns the directories whose contents count as
+// "Trash" on the current platform. macOS uses ~/.Trash; Linux follows the
+// freedesktop spec, honoring XDG_DATA_HOME and falling back to the default
+// ~/.local/share location.
+func trashPathsForPlatform(home string) []string {
+	if runtime.GOOS != "darwin" {
+		dataHome := os.Getenv("XDG_DATA_HOME")
+		if dataHome == "" {
+			dataHome = filepath.Join(home, ".local", "share")
+		}
+		return []string{filepath.Join(dataHome, "Trash", "files")}
+	}
+	return []string{filepath.Join(home, ".Trash")}
 }

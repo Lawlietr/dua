@@ -14,21 +14,29 @@ import (
 var collectProcessesFunc = collectProcesses
 
 func collectProcesses() ([]ProcessInfo, error) {
-	if runtime.GOOS != "darwin" {
-		return nil, nil
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	out, err := runCmd(ctx, "ps", "-Aceo", "pid=,ppid=,pcpu=,pmem=,rss=,comm=", "-r")
-	if err != nil {
-		out, err = runCmd(ctx, "ps", "aux")
+	if runtime.GOOS == "darwin" {
+		out, err := runCmd(ctx, "ps", "-Aceo", "pid=,ppid=,pcpu=,pmem=,rss=,comm=", "-r")
 		if err != nil {
-			return nil, err
+			out, err = runCmd(ctx, "ps", "aux")
+			if err != nil {
+				return nil, err
+			}
+			return parsePsAuxOutput(out), nil
 		}
-		return parsePsAuxOutput(out), nil
+		return parseProcessOutput(out), nil
 	}
-	return parseProcessOutput(out), nil
+
+	// Linux: `ps aux` is the standard, widely available format. GNU ps does
+	// not accept the darwin `-Aceo ... -r` invocation, so route straight to
+	// the format we know every procps install ships.
+	out, err := runCmd(ctx, "ps", "aux")
+	if err != nil {
+		return nil, err
+	}
+	return parsePsAuxOutput(out), nil
 }
 
 func parseProcessOutput(raw string) []ProcessInfo {

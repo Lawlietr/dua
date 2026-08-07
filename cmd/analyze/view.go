@@ -1,11 +1,8 @@
-//go:build darwin
-
 package main
 
 import (
 	"fmt"
 	"strings"
-	"sync/atomic"
 )
 
 // View renders the TUI.
@@ -49,32 +46,6 @@ func (m model) View() string {
 			fmt.Fprintf(&b, "  |  Total: %s", humanizeBytes(m.totalSize))
 		}
 		fmt.Fprintf(&b, "\n\n")
-	}
-
-	if m.deleting {
-		count := int64(0)
-		if m.deleteCount != nil {
-			count = atomic.LoadInt64(m.deleteCount)
-		}
-
-		// The counter is path-level and only advances once a move completes, so a
-		// single large directory sits at zero for the whole operation. Printing
-		// "0 items removed" there reads as a stalled delete; say what is happening
-		// instead, and show the tally only once it means something.
-		if count > 0 {
-			fmt.Fprintf(&b, "%s%s%s%s Deleting: %s%s items%s removed, please wait...\n",
-				colorCyan, colorBold,
-				spinnerFrames[m.spinner],
-				colorReset,
-				colorYellow, formatNumber(count), colorReset)
-		} else {
-			fmt.Fprintf(&b, "%s%s%s%s Deleting: moving to Trash, please wait...\n",
-				colorCyan, colorBold,
-				spinnerFrames[m.spinner],
-				colorReset)
-		}
-
-		return b.String()
 	}
 
 	if m.scanning {
@@ -154,18 +125,11 @@ func (m model) View() string {
 				sizeColor := colorGray
 				numColor := ""
 
-				isMultiSelected := m.largeMultiSelected != nil && m.largeMultiSelected[file.Path]
 				selectIcon := "○"
-				if isMultiSelected {
-					selectIcon = fmt.Sprintf("%s●%s", colorGreen, colorReset)
-					nameColor = colorGreen
-				}
 
 				if idx == m.largeSelected {
 					entryPrefix = fmt.Sprintf(" %s%s▶%s ", colorCyan, colorBold, colorReset)
-					if !isMultiSelected {
-						nameColor = colorCyan
-					}
+					nameColor = colorCyan
 					sizeColor = colorCyan
 					numColor = colorCyan
 				}
@@ -293,26 +257,15 @@ func (m model) View() string {
 						sizeColor = colorCyan
 					}
 
-					isMultiSelected := m.multiSelected != nil && m.multiSelected[entry.Path]
 					selectIcon := "○"
-					nameColor := ""
-					if isMultiSelected {
-						selectIcon = fmt.Sprintf("%s●%s", colorGreen, colorReset)
-						nameColor = colorGreen
-					}
 
 					entryPrefix := "   "
 					nameSegment := fmt.Sprintf("%s %s", icon, paddedName)
-					if nameColor != "" {
-						nameSegment = fmt.Sprintf("%s%s %s%s", nameColor, icon, paddedName, colorReset)
-					}
 					numColor := ""
 					percentColor := ""
 					if idx == m.selected {
 						entryPrefix = fmt.Sprintf(" %s%s▶%s ", colorCyan, colorBold, colorReset)
-						if !isMultiSelected {
-							nameSegment = fmt.Sprintf("%s%s %s%s", colorCyan, icon, paddedName, colorReset)
-						}
+						nameSegment = fmt.Sprintf("%s%s %s%s", colorCyan, icon, paddedName, colorReset)
 						numColor = colorCyan
 						percentColor = colorCyan
 						sizeColor = colorCyan
@@ -351,72 +304,20 @@ func (m model) View() string {
 		if m.largeFiltering {
 			fmt.Fprintf(&b, "%sType to filter  |  Enter Apply  |  Esc Clear  |  Ctrl+C Quit%s\n", colorGray, colorReset)
 		} else if m.largeFilter != "" {
-			fmt.Fprintf(&b, "%s↑↓← | Space Select | / Edit | Esc Clear filter | O Open | P Preview | F File | ⌫ Del | Q Quit%s\n", colorGray, colorReset)
+			fmt.Fprintf(&b, "%s↑↓← | / Edit | Esc Clear filter | O Open | P Preview | F File | Q Quit%s\n", colorGray, colorReset)
 		} else {
-			selectCount := len(m.largeMultiSelected)
-			if selectCount > 0 {
-				fmt.Fprintf(&b, "%s↑↓← | Space Select | / Filter | R Refresh | O Open | P Preview | F File | ⌫ Del %d | Esc Back | Q/Ctrl+C Quit%s\n", colorGray, selectCount, colorReset)
-			} else {
-				fmt.Fprintf(&b, "%s↑↓← | Space Select | / Filter | R Refresh | O Open | P Preview | F File | ⌫ Del | Esc Back | Q/Ctrl+C Quit%s\n", colorGray, colorReset)
-			}
+			fmt.Fprintf(&b, "%s↑↓← | / Filter | R Refresh | O Open | P Preview | F File | Esc Back | Q/Ctrl+C Quit%s\n", colorGray, colorReset)
 		}
 	} else if m.entryFiltering {
 		fmt.Fprintf(&b, "%sType to filter  |  Enter Apply  |  Esc Clear  |  Ctrl+C Quit%s\n", colorGray, colorReset)
 	} else if m.entryFilter != "" {
-		fmt.Fprintf(&b, "%s↑↓←→ | Enter | Space Select | / Edit | Esc Clear filter | O Open | P Preview | F File | ⌫ Del | Q Quit%s\n", colorGray, colorReset)
+		fmt.Fprintf(&b, "%s↑↓←→ | Enter | / Edit | Esc Clear filter | O Open | P Preview | F File | Q Quit%s\n", colorGray, colorReset)
 	} else {
 		largeFileCount := len(m.largeFiles)
-		selectCount := len(m.multiSelected)
-		if selectCount > 0 {
-			if largeFileCount > 0 {
-				fmt.Fprintf(&b, "%s↑↓←→ | Space Select | Enter | / Filter | R Refresh | O Open | P Preview | F File | ⌫ Del %d | T Top %d | Esc Back | Q/Ctrl+C Quit%s\n", colorGray, selectCount, largeFileCount, colorReset)
-			} else {
-				fmt.Fprintf(&b, "%s↑↓←→ | Space Select | Enter | / Filter | R Refresh | O Open | P Preview | F File | ⌫ Del %d | Esc Back | Q/Ctrl+C Quit%s\n", colorGray, selectCount, colorReset)
-			}
+		if largeFileCount > 0 {
+			fmt.Fprintf(&b, "%s↑↓←→ | Enter | / Filter | R Refresh | O Open | P Preview | F File | T Top %d | Esc Back | Q/Ctrl+C Quit%s\n", colorGray, largeFileCount, colorReset)
 		} else {
-			if largeFileCount > 0 {
-				fmt.Fprintf(&b, "%s↑↓←→ | Space Select | Enter | / Filter | R Refresh | O Open | P Preview | F File | ⌫ Del | T Top %d | Esc Back | Q/Ctrl+C Quit%s\n", colorGray, largeFileCount, colorReset)
-			} else {
-				fmt.Fprintf(&b, "%s↑↓←→ | Space Select | Enter | / Filter | R Refresh | O Open | P Preview | F File | ⌫ Del | Esc Back | Q/Ctrl+C Quit%s\n", colorGray, colorReset)
-			}
-		}
-	}
-	if m.deleteConfirm && m.deleteTarget != nil {
-		fmt.Fprintln(&b)
-		var deleteCount int
-		var totalDeleteSize int64
-		if m.showLargeFiles && len(m.largeMultiSelected) > 0 {
-			deleteCount = len(m.largeMultiSelected)
-			for path := range m.largeMultiSelected {
-				for _, file := range m.largeFiles {
-					if file.Path == path {
-						totalDeleteSize += file.Size
-						break
-					}
-				}
-			}
-		} else if !m.showLargeFiles && len(m.multiSelected) > 0 {
-			deleteCount = len(m.multiSelected)
-			for path := range m.multiSelected {
-				for _, entry := range m.entries {
-					if entry.Path == path {
-						totalDeleteSize += entry.Size
-						break
-					}
-				}
-			}
-		}
-
-		if deleteCount > 1 {
-			fmt.Fprintf(&b, "%sDelete:%s %d items, %s  %sPress Enter to confirm  |  ESC cancel%s\n",
-				colorRed, colorReset,
-				deleteCount, humanizeBytes(totalDeleteSize),
-				colorGray, colorReset)
-		} else {
-			fmt.Fprintf(&b, "%sDelete:%s %s, %s  %sPress Enter to confirm  |  ESC cancel%s\n",
-				colorRed, colorReset,
-				m.deleteTarget.Name, humanizeBytes(m.deleteTarget.Size),
-				colorGray, colorReset)
+			fmt.Fprintf(&b, "%s↑↓←→ | Enter | / Filter | R Refresh | O Open | P Preview | F File | Esc Back | Q/Ctrl+C Quit%s\n", colorGray, colorReset)
 		}
 	}
 	return b.String()

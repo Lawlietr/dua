@@ -1,4 +1,4 @@
-# Mole gitleaks configuration
+# dua gitleaks configuration
 # Replaces grep-based secret scan in .github/workflows/test.yml
 # Uses gitleaks default ruleset (AWS / GitHub / Slack / private keys / etc).
 
@@ -6,7 +6,7 @@
 useDefault = true
 
 [allowlist]
-description = "Mole-specific allowlist"
+description = "dua allowlist"
 
 # Test fixtures and mock binaries never hold real secrets.
 paths = [
@@ -18,7 +18,7 @@ paths = [
     '''lib/core/app_protection_data\.sh''',
 ]
 
-# Mole talks about "password" / "Touch ID" in UI prompts and sudo helpers.
+# dua talks about "password" in UI prompts and sudo helpers.
 # These are user-visible strings, not credentials.
 regexes = [
     '''password( and| or| dialog| prompt| input|,)''',

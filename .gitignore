@@ -1,12 +1,3 @@
-# macOS
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
 # Editor files
 *~
 *.swp
@@ -24,8 +15,6 @@ tmp/
 temp/
 *.tmp
 *.temp
-*.dmg
-tests/tmp-*
 
 # Cache
 .cache/
@@ -47,37 +36,15 @@ tests/tmp-*
 CLAUDE.local.md
 AGENTS.local.md
 AGENTS.override.md
-.claude/*
-!.claude/agents/
-!.claude/hooks/
-!.claude/skills/
-!.claude/settings.json
-.claude/settings.local.json
-.agents/settings.local.json
-.gemini/
-.kiro/
-GEMINI.md
-ANTIGRAVITY.md
-WARP.md
-journal/
-.cursorrules
 
 # Go build artifacts (development)
 cmd/analyze/analyze
 cmd/status/status
 /status
 /analyze
-mole-analyze
 # Go binaries
-bin/analyze-go
-bin/status-go
-bin/analyze-darwin-*
-bin/status-darwin-*
-
-# Test artifacts
-tests/tmp-*/
-tests/*.tmp
-tests/*.log
+bin/dua-analyze
+bin/dua-status
 
 # Go test coverage files
 *.out
@@ -85,5 +52,3 @@ coverage.out
 coverage.html
 
 session.json
-run_tests.ps1
-mole_guidelines.md

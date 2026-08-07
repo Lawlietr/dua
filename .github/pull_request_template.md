@@ -2,16 +2,16 @@
 
 - Describe the change.
 
-## Safety Review
+## Scope
 
-- Does this change affect cleanup, uninstall, optimize, installer, remove, analyze delete, update, or install behavior?
-- Does this change affect path validation, protected directories, symlink handling, sudo boundaries, or release/install integrity?
-- If yes, describe the new boundary or risk change clearly.
+- dua is a read-only disk analysis and status tool. Does this change add cleanup, deletion, or modification behavior? If yes, reconsider: the project is intentionally read-only.
+- Does this change touch path scanning, symlink handling, or platform (Linux/macOS) branches?
+- If yes, describe the new behavior or risk change clearly.
 
 ## Tests
 
-- List the automated tests you ran.
-- List any manual checks for high-risk paths or destructive flows.
+- List the automated tests you ran (`go test ./...`).
+- List any manual checks (e.g. `dua analyze --json /path`, `dua status --json`).
 
 ## Safety-related changes
 

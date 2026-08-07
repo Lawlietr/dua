@@ -1,5 +1,3 @@
-//go:build darwin
-
 package main
 
 import (
@@ -19,13 +17,12 @@ func topFilesFixture() model {
 	cloned := make([]fileEntry, len(files))
 	copy(cloned, files)
 	return model{
-		path:               "/tmp/p",
-		showLargeFiles:     true,
-		largeFilesAll:      files,
-		largeFiles:         cloned,
-		largeMultiSelected: map[string]bool{},
-		height:             40,
-		width:              120,
+		path:           "/tmp/p",
+		showLargeFiles: true,
+		largeFilesAll:  files,
+		largeFiles:     cloned,
+		height:         40,
+		width:          120,
 	}
 }
 
@@ -109,18 +106,6 @@ func TestLargeFilterBackspaceEditsQuery(t *testing.T) {
 	}
 }
 
-func TestLargeFilterClearsMultiSelectOnQueryChange(t *testing.T) {
-	m := topFilesFixture()
-	m.largeMultiSelected = map[string]bool{"/tmp/p/photo.jpg": true}
-
-	m, _ = filterRune(t, m, '/')
-	m = filterType(t, m, "a")
-
-	if len(m.largeMultiSelected) != 0 {
-		t.Fatalf("changing the query should clear multi-selection, got %d", len(m.largeMultiSelected))
-	}
-}
-
 func TestLargeFilterClampsSelection(t *testing.T) {
 	m := topFilesFixture()
 	m.largeSelected = 2 // beta.mp4 in the full list
@@ -133,23 +118,6 @@ func TestLargeFilterClampsSelection(t *testing.T) {
 	}
 	if m.largeSelected != 0 {
 		t.Fatalf("selection should clamp into the visible range, got %d", m.largeSelected)
-	}
-}
-
-func TestLargeFilterDeleteTargetsVisibleMatch(t *testing.T) {
-	m := topFilesFixture()
-
-	m, _ = filterRune(t, m, '/')
-	m = filterType(t, m, "beta") // single visible match: beta.mp4 (hidden in full list at index 2)
-	m, _ = filterKey(t, m, tea.KeyMsg{Type: tea.KeyEnter})
-
-	// backspace maps to the delete action once we are out of input mode.
-	m, _ = filterKey(t, m, tea.KeyMsg{Type: tea.KeyBackspace})
-	if !m.deleteConfirm {
-		t.Fatalf("expected delete confirmation to open")
-	}
-	if m.deleteTarget == nil || m.deleteTarget.Path != "/tmp/p/beta.mp4" {
-		t.Fatalf("delete must target the visible match, got %+v", m.deleteTarget)
 	}
 }
 
@@ -172,16 +140,15 @@ func treeFixture() model {
 	}
 	var filesScanned, dirsScanned, bytesScanned int64
 	return model{
-		path:          "/tmp/p",
-		entriesAll:    entries,
-		entries:       slices.Clone(entries),
-		multiSelected: map[string]bool{},
-		cache:         map[string]historyEntry{},
-		filesScanned:  &filesScanned,
-		dirsScanned:   &dirsScanned,
-		bytesScanned:  &bytesScanned,
-		height:        40,
-		width:         120,
+		path:         "/tmp/p",
+		entriesAll:   entries,
+		entries:      slices.Clone(entries),
+		cache:        map[string]historyEntry{},
+		filesScanned: &filesScanned,
+		dirsScanned:  &dirsScanned,
+		bytesScanned: &bytesScanned,
+		height:       40,
+		width:        120,
 	}
 }
 
@@ -222,18 +189,6 @@ func TestEntryFilterSwallowsNavigationKeys(t *testing.T) {
 	}
 	if m.entryFilter != "q" {
 		t.Fatalf("q should append to the query, got %q", m.entryFilter)
-	}
-}
-
-func TestEntryFilterClearsMultiSelectOnQueryChange(t *testing.T) {
-	m := treeFixture()
-	m.multiSelected = map[string]bool{"/tmp/p/logs": true}
-
-	m, _ = filterRune(t, m, '/')
-	m = filterType(t, m, "a")
-
-	if len(m.multiSelected) != 0 {
-		t.Fatalf("changing the query should clear multi-selection, got %d", len(m.multiSelected))
 	}
 }
 
@@ -283,35 +238,6 @@ func TestEntryFilterDrillInPreservesFullParentOnBack(t *testing.T) {
 	}
 	if m.selected < 0 || m.selected >= len(m.entries) || m.entries[m.selected].Path != "/tmp/p/node_modules" {
 		t.Fatalf("entered entry should stay highlighted, selected=%d", m.selected)
-	}
-}
-
-// Deleting with no active filter must not corrupt the backing lists. Before the
-// rebuild-from-backing fix, removing from both a list and its aliased view
-// shifted the shared array twice, leaving a duplicated, stale entry behind.
-func TestRemovePathPreservesBackingLists(t *testing.T) {
-	m := treeFixture() // entriesAll aliases entries: [apps, logs, node_modules]
-	m.totalSize = 600
-
-	m.removePathFromView("/tmp/p/logs")
-
-	if len(m.entriesAll) != 2 {
-		t.Fatalf("entriesAll should drop to 2, got %d", len(m.entriesAll))
-	}
-	if len(m.entries) != 2 {
-		t.Fatalf("entries should drop to 2, got %d", len(m.entries))
-	}
-	seen := map[string]int{}
-	for _, e := range m.entriesAll {
-		seen[e.Path]++
-	}
-	if seen["/tmp/p/logs"] != 0 {
-		t.Fatalf("deleted path still present in entriesAll")
-	}
-	for p, c := range seen {
-		if c != 1 {
-			t.Fatalf("entry %s duplicated %d times in entriesAll", p, c)
-		}
 	}
 }
 

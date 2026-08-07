@@ -1,6 +1,6 @@
 ---
 name: Bug Report
-about: Report a bug or issue with Mole
+about: Report a bug or issue with dua
 title: '[BUG] '
 labels: bug
 assignees: ''
@@ -10,11 +10,9 @@ assignees: ''
 
 A clear and concise description of what the bug is. We suggest using English for better global understanding.
 
-If you believe the issue may allow unsafe deletion, path validation bypass, privilege boundary bypass, or release/install integrity issues, do not file a public bug report. Report it privately using the contact details in `SECURITY.md`.
-
 ## Steps to reproduce
 
-1. Run command: `mo ...`
+1. Run command: `dua ...`
 2. ...
 3. See error
 
@@ -22,31 +20,23 @@ If you believe the issue may allow unsafe deletion, path validation bypass, priv
 
 A clear and concise description of what you expected to happen.
 
-## Debug logs
+## Command output
 
-Please run the command with `--debug` flag and paste the output here:
+Paste the command output here:
 
 ```bash
-mo <command> --debug
-# Example: mo clean --debug
+dua status --json
+dua analyze --json [PATH]
 ```
-
-<details>
-<summary>Debug output</summary>
 
 ```text
-Paste the debug output here
+Paste the output here
 ```
-
-</details>
 
 ## Environment
 
-Please run `mo update` to ensure you are on the latest version, then paste the output of `mo --version` below:
-
-```text
-Paste mo --version output here
-```
+- Linux distribution and version (e.g. Ubuntu 24.04)
+- `dua --help` or the binary build you are running
 
 ## Additional context
 

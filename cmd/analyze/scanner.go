@@ -1,5 +1,3 @@
-//go:build darwin
-
 package main
 
 import (
@@ -427,8 +425,10 @@ func scanPathConcurrentWithLimiter(root string, filesScanned, dirsScanned, bytes
 		largeFiles[i] = heap.Pop(largeFilesHeap).(fileEntry)
 	}
 
-	// Use Spotlight for large files when it expands the list.
-	if useSpotlight {
+	// Use Spotlight for large files when it expands the list. Spotlight
+	// (mdfind) is macOS-only; on other platforms the walk already collected
+	// the large-file candidates.
+	if useSpotlight && runtime.GOOS == "darwin" {
 		if spotlightFiles := findLargeFilesWithSpotlight(root, spotlightMinFileSize); len(spotlightFiles) > len(largeFiles) {
 			largeFiles = spotlightFiles
 		}
@@ -863,7 +863,7 @@ func getDirectorySizeFromDuWithExcludeAndIgnores(path string, excludePath string
 
 		args := []string{"-skPx"}
 		for _, ignoreName := range ignoreNames {
-			args = append(args, "-I", ignoreName)
+			args = append(args, duExcludeArgs(ignoreName)...)
 		}
 		args = append(args, target)
 		cmd := exec.CommandContext(ctx, "du", args...)
@@ -927,6 +927,15 @@ func getDirectorySizeFromDuWithExcludeAndIgnores(path string, excludePath string
 	}
 
 	return runDuSize(path)
+}
+
+// duExcludeArgs returns the flag pair du uses to exclude a basename pattern.
+// GNU du (Linux) takes --exclude=NAME while BSD du (macOS) takes -I NAME.
+func duExcludeArgs(ignoreName string) []string {
+	if runtime.GOOS == "linux" {
+		return []string{"--exclude=" + ignoreName}
+	}
+	return []string{"-I", ignoreName}
 }
 
 func validateDuIgnoreName(name string) error {
@@ -1104,5 +1113,5 @@ func getLastAccessTimeFromInfo(info fs.FileInfo) time.Time {
 	if !ok {
 		return time.Time{}
 	}
-	return time.Unix(stat.Atimespec.Sec, stat.Atimespec.Nsec)
+	return fileLastAccessTime(stat)
 }

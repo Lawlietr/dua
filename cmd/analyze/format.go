@@ -1,5 +1,3 @@
-//go:build darwin
-
 package main
 
 import (
@@ -9,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tw93/mole/internal/units"
+	"github.com/tw93/dua/internal/units"
 )
 
 func displayPath(path string) string {

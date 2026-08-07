@@ -1,4 +1,4 @@
-// Package main provides the mo status command for real-time system monitoring.
+// Package main provides the dua status command for real-time system monitoring.
 package main
 
 import (
@@ -46,7 +46,6 @@ func shouldUseJSONOutput(forceJSON bool, stdout *os.File) bool {
 }
 
 type tickMsg struct{}
-type animTickMsg struct{}
 
 type collectionMode int
 
@@ -73,9 +72,7 @@ type model struct {
 	lastFullAt    time.Time
 	lastProcessAt time.Time
 	collecting    bool
-	animFrame     int
-	catHidden     bool // true = hidden, false = visible
-	cpuCores      int  // how many CPU cores to list; 0 = all
+	cpuCores      int // how many CPU cores to list; 0 = all
 }
 
 // padViewToHeight ensures the rendered frame always overwrites the full
@@ -96,7 +93,6 @@ func padViewToHeight(view string, height int) string {
 func newModel() model {
 	return model{
 		collector: NewCollector(processWatchOptionsFromFlags()),
-		catHidden: loadCatHidden(),
 		cpuCores:  loadCPUCores(),
 	}
 }
@@ -120,7 +116,7 @@ func validateFlags() error {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(tickAfter(0), animTick())
+	return tea.Batch(tickAfter(0))
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -129,11 +125,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q", "esc", "ctrl+c":
 			return m, tea.Quit
-		case "k":
-			// Toggle cat visibility and persist preference
-			m.catHidden = !m.catHidden
-			saveCatHidden(m.catHidden)
-			return m, nil
 		case "c":
 			// Cycle how many CPU cores the card lists (2 → 4 → 8 → all) and persist.
 			m.cpuCores = nextCPUCores(m.cpuCores)
@@ -172,9 +163,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			delay = 0
 		}
 		return m, tickAfter(delay)
-	case animTickMsg:
-		m.animFrame++
-		return m, animTickWithSpeed(m.metrics.CPU.Usage)
 	}
 	return m, nil
 }
@@ -189,7 +177,7 @@ func (m model) View() string {
 		termWidth = 80
 	}
 
-	header, mole := renderHeader(m.metrics, m.errMessage, m.animFrame, termWidth, m.catHidden)
+	header := renderHeader(m.metrics, m.errMessage, termWidth)
 	alertBar := renderProcessAlertBar(m.metrics.ProcessAlerts, termWidth)
 
 	renderFrame := func(cpuCores int) string {
@@ -215,20 +203,17 @@ func (m model) View() string {
 			cardContent = renderTwoColumns(cards, termWidth)
 		}
 
-		// Combine header, mole, and cards with consistent spacing
+		// Combine header and cards with consistent spacing
 		parts := []string{header}
 		if alertBar != "" {
 			parts = append(parts, alertBar)
-		}
-		if mole != "" {
-			parts = append(parts, mole)
 		}
 		parts = append(parts, cardContent)
 		return lipgloss.JoinVertical(lipgloss.Left, parts...)
 	}
 
 	// Every extra core is another card row, and the frame has no scrollback: on
-	// a 20-core Mac "all" adds ~18 lines and pushes the lower cards off a short
+	// a 20-core machine "all" adds ~18 lines and pushes the lower cards off a short
 	// window. Step the preference back down until the frame fits; the stored
 	// preference is untouched, so a taller window gets it back.
 	cpuCores := m.cpuCores
@@ -286,16 +271,6 @@ func (m model) collectCmd(mode collectionMode) tea.Cmd {
 
 func tickAfter(delay time.Duration) tea.Cmd {
 	return tea.Tick(delay, func(time.Time) tea.Msg { return tickMsg{} })
-}
-
-func animTick() tea.Cmd {
-	return tea.Tick(200*time.Millisecond, func(time.Time) tea.Msg { return animTickMsg{} })
-}
-
-func animTickWithSpeed(cpuUsage float64) tea.Cmd {
-	// Higher CPU = faster animation.
-	interval := max(300-int(cpuUsage*2.5), 50)
-	return tea.Tick(time.Duration(interval)*time.Millisecond, func(time.Time) tea.Msg { return animTickMsg{} })
 }
 
 // runJSONMode collects metrics once and outputs as JSON.

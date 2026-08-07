@@ -1,5 +1,3 @@
-//go:build darwin
-
 package main
 
 import (
@@ -119,14 +117,6 @@ type overviewSizeMsg struct {
 
 type tickMsg time.Time
 
-type deleteProgressMsg struct {
-	done         bool
-	err          error
-	count        int64
-	path         string
-	removedPaths []string
-}
-
 type model struct {
 	path                string
 	history             []historyEntry
@@ -144,10 +134,6 @@ type model struct {
 	currentPath         *atomic.Value
 	showLargeFiles      bool
 	isOverview          bool
-	deleteConfirm       bool
-	deleteTarget        *dirEntry
-	deleting            bool
-	deleteCount         *int64
 	cache               map[string]historyEntry
 	largeSelected       int
 	largeOffset         int
@@ -156,8 +142,6 @@ type model struct {
 	overviewScanningSet map[string]bool // Track which paths are currently being scanned
 	width               int             // Terminal width
 	height              int             // Terminal height
-	multiSelected       map[string]bool // Track multi-selected items by path (safer than index)
-	largeMultiSelected  map[string]bool // Track multi-selected large files by path (safer than index)
 	totalFiles          int64           // Total files found in current/last scan
 	lastTotalFiles      int64           // Total files from previous scan (for progress bar)
 	diskFree            int64           // Free disk space for the analyzed volume
@@ -275,40 +259,6 @@ func (m *model) clampLargeSelection() {
 	}
 }
 
-func (m *model) removePathFromView(path string) {
-	if path == "" {
-		return
-	}
-
-	var removedSize int64
-	for _, entry := range m.entriesAll {
-		if entry.Path == path {
-			if entry.Size > 0 {
-				removedSize = entry.Size
-			}
-			break
-		}
-	}
-
-	// Trim the backing lists once, then rebuild each view from them. Removing
-	// directly from both a backing list and its (possibly aliased) view would
-	// shift the shared array twice and corrupt it; rebuilding via the filters
-	// keeps the view, the query, and the selection consistent.
-	m.entriesAll = removeByPath(m.entriesAll, path, dirEntryPath)
-	m.largeFilesAll = removeByPath(m.largeFilesAll, path, fileEntryPath)
-
-	if removedSize > 0 {
-		if removedSize > m.totalSize {
-			m.totalSize = 0
-		} else {
-			m.totalSize -= removedSize
-		}
-	}
-
-	m.applyEntryFilter()
-	m.applyLargeFilter()
-}
-
 func fileEntryName(f fileEntry) string { return f.Name }
 func fileEntryPath(f fileEntry) string { return f.Path }
 func dirEntryName(e dirEntry) string   { return e.Name }
@@ -336,16 +286,6 @@ func filterByQuery[T any](all []T, query string, nameOf, pathOf func(T) string) 
 		}
 	}
 	return out
-}
-
-// removeByPath drops the first item whose projected path equals path.
-func removeByPath[T any](items []T, path string, pathOf func(T) string) []T {
-	for i := range items {
-		if pathOf(items[i]) == path {
-			return append(items[:i], items[i+1:]...)
-		}
-	}
-	return items
 }
 
 // applyLargeFilter rebuilds the rendered Top-files view from largeFilesAll

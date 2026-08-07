@@ -1,12 +1,8 @@
-//go:build darwin
-
 package main
 
 import (
 	"fmt"
-	"path/filepath"
 	"slices"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -293,63 +289,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		return m, nil
-	case deleteProgressMsg:
-		if msg.done {
-			m.deleting = false
-			m.multiSelected = make(map[string]bool)
-			m.largeMultiSelected = make(map[string]bool)
-			removedPaths := append([]string(nil), msg.removedPaths...)
-			if msg.err == nil && msg.path != "" {
-				removedPaths = append(removedPaths, msg.path)
-			}
-			for _, removedPath := range removedPaths {
-				m.removePathFromView(removedPath)
-				invalidateCache(removedPath)
-			}
-
-			if len(removedPaths) > 0 {
-				invalidateCache(m.path)
-				if msg.err != nil {
-					m.status = fmt.Sprintf("Deleted %d items; some failed: %v", msg.count, msg.err)
-				} else {
-					m.status = fmt.Sprintf("Deleted %d items", msg.count)
-				}
-
-				// Selective invalidation: only mark current path and ancestors as needing refresh
-				currentPath := m.path
-				for currentPath != "/" && currentPath != "" {
-					if entry, exists := m.cache[currentPath]; exists {
-						entry.NeedsRefresh = true
-						m.cache[currentPath] = entry
-					}
-					currentPath = filepath.Dir(currentPath)
-				}
-
-				// Mark history entries for current path and ancestors as needing refresh
-				for i := range m.history {
-					histPath := m.history[i].Path
-					if histPath == m.path || strings.HasPrefix(m.path, histPath+"/") {
-						m.history[i].NeedsRefresh = true
-					}
-				}
-
-				m.cancelLiveScan()
-				m.scanning = true
-				atomic.StoreInt64(m.filesScanned, 0)
-				atomic.StoreInt64(m.dirsScanned, 0)
-				atomic.StoreInt64(m.bytesScanned, 0)
-				if m.currentPath != nil {
-					m.currentPath.Store("")
-				}
-				return m, tea.Batch(m.scanCmd(m.path), tickCmd())
-			}
-			if msg.err != nil {
-				m.status = fmt.Sprintf("Failed to delete: %v", msg.err)
-			} else {
-				m.status = fmt.Sprintf("Deleted %d items", msg.count)
-			}
-		}
-		return m, nil
 	case scanResultMsg:
 		if msg.path != "" && msg.path != m.path {
 			if msg.err == nil {
@@ -511,14 +450,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		if m.scanning || m.deleting || (m.inOverviewMode() && (m.overviewScanning || hasPending)) {
+		if m.scanning || (m.inOverviewMode() && (m.overviewScanning || hasPending)) {
 			m.spinner = (m.spinner + 1) % len(spinnerFrames)
-			if m.deleting && m.deleteCount != nil {
-				count := atomic.LoadInt64(m.deleteCount)
-				if count > 0 {
-					m.status = fmt.Sprintf("Moving to Trash... %s items", formatNumber(count))
-				}
-			}
 			return m, tickCmd()
 		}
 		return m, nil
@@ -528,62 +461,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Delete confirm flow.
-	if m.deleteConfirm {
-		switch msg.String() {
-		case "enter":
-			m.deleteConfirm = false
-			m.deleting = true
-			var deleteCount int64
-			m.deleteCount = &deleteCount
-
-			// Collect paths (safer than indices).
-			var pathsToDelete []string
-			if m.showLargeFiles {
-				if len(m.largeMultiSelected) > 0 {
-					for path := range m.largeMultiSelected {
-						pathsToDelete = append(pathsToDelete, path)
-					}
-				} else if m.deleteTarget != nil {
-					pathsToDelete = append(pathsToDelete, m.deleteTarget.Path)
-				}
-			} else {
-				if len(m.multiSelected) > 0 {
-					for path := range m.multiSelected {
-						pathsToDelete = append(pathsToDelete, path)
-					}
-				} else if m.deleteTarget != nil {
-					pathsToDelete = append(pathsToDelete, m.deleteTarget.Path)
-				}
-			}
-
-			m.deleteTarget = nil
-			if len(pathsToDelete) == 0 {
-				m.deleting = false
-				m.status = "Nothing to delete"
-				return m, nil
-			}
-
-			if len(pathsToDelete) == 1 {
-				targetPath := pathsToDelete[0]
-				m.status = fmt.Sprintf("Deleting %s...", filepath.Base(targetPath))
-				return m, tea.Batch(deletePathCmd(targetPath, m.deleteCount), tickCmd())
-			}
-
-			m.status = fmt.Sprintf("Deleting %d items...", len(pathsToDelete))
-			return m, tea.Batch(deleteMultiplePathsCmd(pathsToDelete, m.deleteCount), tickCmd())
-		case "esc", "q":
-			m.status = "Cancelled"
-			m.deleteConfirm = false
-			m.deleteTarget = nil
-			return m, nil
-		case "ctrl+c":
-			return m, tea.Quit
-		default:
-			return m, nil
-		}
-	}
-
 	// Filter prompts swallow all keys while the user types a query.
 	if m.largeFiltering {
 		return m.updateLargeFilterInput(msg)
@@ -667,8 +544,6 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.goBack()
 	case "r", "R":
 		m.cancelLiveScan()
-		m.multiSelected = make(map[string]bool)
-		m.largeMultiSelected = make(map[string]bool)
 
 		if m.inOverviewMode() {
 			// Explicitly invalidate cache for all overview entries to force re-scan
@@ -717,9 +592,6 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.showLargeFiles {
 				m.largeSelected = 0
 				m.largeOffset = 0
-				m.largeMultiSelected = make(map[string]bool)
-			} else {
-				m.multiSelected = make(map[string]bool)
 			}
 			m.status = fmt.Sprintf("Scanned %s", humanizeBytes(m.totalSize))
 		}
@@ -746,96 +618,36 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status = fmt.Sprintf("Live sort: %s", liveSortModeLabel(m.liveSortMode))
 		}
 	case "o", "O":
-		// Open selected entries (multi-select aware).
-		const maxBatchOpen = 20
 		if m.showLargeFiles {
 			if len(m.largeFiles) > 0 {
-				if len(m.largeMultiSelected) > 0 {
-					count := len(m.largeMultiSelected)
-					if count > maxBatchOpen {
-						m.status = fmt.Sprintf("Too many items to open, max %d, selected %d", maxBatchOpen, count)
-						return m, nil
-					}
-					for path := range m.largeMultiSelected {
-						go func(p string) {
-							_ = safeOpen(p, false)
-						}(path)
-					}
-					m.status = fmt.Sprintf("Opening %d items...", count)
-				} else {
-					selected := m.largeFiles[m.largeSelected]
-					go func(path string) {
-						_ = safeOpen(path, false)
-					}(selected.Path)
-					m.status = fmt.Sprintf("Opening %s...", selected.Name)
-				}
-			}
-		} else if len(m.entries) > 0 {
-			if len(m.multiSelected) > 0 {
-				count := len(m.multiSelected)
-				if count > maxBatchOpen {
-					m.status = fmt.Sprintf("Too many items to open, max %d, selected %d", maxBatchOpen, count)
-					return m, nil
-				}
-				for path := range m.multiSelected {
-					go func(p string) {
-						_ = safeOpen(p, false)
-					}(path)
-				}
-				m.status = fmt.Sprintf("Opening %d items...", count)
-			} else {
-				selected := m.entries[m.selected]
+				selected := m.largeFiles[m.largeSelected]
 				go func(path string) {
 					_ = safeOpen(path, false)
 				}(selected.Path)
 				m.status = fmt.Sprintf("Opening %s...", selected.Name)
 			}
+		} else if len(m.entries) > 0 {
+			selected := m.entries[m.selected]
+			go func(path string) {
+				_ = safeOpen(path, false)
+			}(selected.Path)
+			m.status = fmt.Sprintf("Opening %s...", selected.Name)
 		}
 	case "f", "F":
-		// Reveal in Finder (multi-select aware).
-		const maxBatchReveal = 20
 		if m.showLargeFiles {
 			if len(m.largeFiles) > 0 {
-				if len(m.largeMultiSelected) > 0 {
-					count := len(m.largeMultiSelected)
-					if count > maxBatchReveal {
-						m.status = fmt.Sprintf("Too many items to reveal, max %d, selected %d", maxBatchReveal, count)
-						return m, nil
-					}
-					for path := range m.largeMultiSelected {
-						go func(p string) {
-							_ = safeOpen(p, true)
-						}(path)
-					}
-					m.status = fmt.Sprintf("Showing %d items in Finder...", count)
-				} else {
-					selected := m.largeFiles[m.largeSelected]
-					go func(path string) {
-						_ = safeOpen(path, true)
-					}(selected.Path)
-					m.status = fmt.Sprintf("Showing %s in Finder...", selected.Name)
-				}
-			}
-		} else if len(m.entries) > 0 {
-			if len(m.multiSelected) > 0 {
-				count := len(m.multiSelected)
-				if count > maxBatchReveal {
-					m.status = fmt.Sprintf("Too many items to reveal, max %d, selected %d", maxBatchReveal, count)
-					return m, nil
-				}
-				for path := range m.multiSelected {
-					go func(p string) {
-						_ = safeOpen(p, true)
-					}(path)
-				}
-				m.status = fmt.Sprintf("Showing %d items in Finder...", count)
-			} else {
-				selected := m.entries[m.selected]
+				selected := m.largeFiles[m.largeSelected]
 				go func(path string) {
 					_ = safeOpen(path, true)
 				}(selected.Path)
-				m.status = fmt.Sprintf("Showing %s in Finder...", selected.Name)
+				m.status = fmt.Sprintf("Showing %s in file manager...", selected.Name)
 			}
+		} else if len(m.entries) > 0 {
+			selected := m.entries[m.selected]
+			go func(path string) {
+				_ = safeOpen(path, true)
+			}(selected.Path)
+			m.status = fmt.Sprintf("Showing %s in file manager...", selected.Name)
 		}
 	case "p", "P":
 		// Quick Look preview (single file only, no multi-select).
@@ -856,118 +668,6 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.status = fmt.Sprintf("Previewing %s...", selected.Name)
 			}
 		}
-	case " ":
-		if m.scanning {
-			m.status = "Selection is available after the scan finishes"
-			return m, nil
-		}
-		// Toggle multi-select (paths as keys).
-		if m.showLargeFiles {
-			if len(m.largeFiles) > 0 && m.largeSelected < len(m.largeFiles) {
-				if m.largeMultiSelected == nil {
-					m.largeMultiSelected = make(map[string]bool)
-				}
-				selectedPath := m.largeFiles[m.largeSelected].Path
-				if m.largeMultiSelected[selectedPath] {
-					delete(m.largeMultiSelected, selectedPath)
-				} else {
-					m.largeMultiSelected[selectedPath] = true
-				}
-				count := len(m.largeMultiSelected)
-				if count > 0 {
-					var totalSize int64
-					for path := range m.largeMultiSelected {
-						for _, file := range m.largeFiles {
-							if file.Path == path {
-								totalSize += file.Size
-								break
-							}
-						}
-					}
-					m.status = fmt.Sprintf("%d selected, %s", count, humanizeBytes(totalSize))
-				} else {
-					m.status = fmt.Sprintf("Scanned %s", humanizeBytes(m.totalSize))
-				}
-			}
-		} else if len(m.entries) > 0 && !m.inOverviewMode() && m.selected < len(m.entries) {
-			if m.multiSelected == nil {
-				m.multiSelected = make(map[string]bool)
-			}
-			selectedPath := m.entries[m.selected].Path
-			if m.multiSelected[selectedPath] {
-				delete(m.multiSelected, selectedPath)
-			} else {
-				m.multiSelected[selectedPath] = true
-			}
-			count := len(m.multiSelected)
-			if count > 0 {
-				var totalSize int64
-				for path := range m.multiSelected {
-					for _, entry := range m.entries {
-						if entry.Path == path {
-							totalSize += entry.Size
-							break
-						}
-					}
-				}
-				m.status = fmt.Sprintf("%d selected, %s", count, humanizeBytes(totalSize))
-			} else {
-				m.status = fmt.Sprintf("Scanned %s", humanizeBytes(m.totalSize))
-			}
-		}
-	case "delete", "backspace":
-		if m.scanning {
-			m.status = "Delete is available after the scan finishes"
-			return m, nil
-		}
-		if m.showLargeFiles {
-			if len(m.largeFiles) > 0 {
-				if len(m.largeMultiSelected) > 0 {
-					m.deleteConfirm = true
-					for path := range m.largeMultiSelected {
-						for _, file := range m.largeFiles {
-							if file.Path == path {
-								m.deleteTarget = &dirEntry{
-									Name:  file.Name,
-									Path:  file.Path,
-									Size:  file.Size,
-									IsDir: false,
-								}
-								break
-							}
-						}
-						break // Only need first one for display
-					}
-				} else if m.largeSelected < len(m.largeFiles) {
-					selected := m.largeFiles[m.largeSelected]
-					m.deleteConfirm = true
-					m.deleteTarget = &dirEntry{
-						Name:  selected.Name,
-						Path:  selected.Path,
-						Size:  selected.Size,
-						IsDir: false,
-					}
-				}
-			}
-		} else if len(m.entries) > 0 && !m.inOverviewMode() {
-			if len(m.multiSelected) > 0 {
-				m.deleteConfirm = true
-				for path := range m.multiSelected {
-					// Resolve entry by path.
-					for i := range m.entries {
-						if m.entries[i].Path == path {
-							m.deleteTarget = &m.entries[i]
-							break
-						}
-					}
-					break // Only need first one for display
-				}
-			} else if m.selected < len(m.entries) {
-				selected := m.entries[m.selected]
-				m.deleteConfirm = true
-				m.deleteTarget = &selected
-			}
-		}
 	}
 	return m, nil
 }
@@ -976,8 +676,7 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // is active. Typing edits the query and re-filters live; Enter applies and
 // hands control back to navigation; Esc clears the filter entirely. Navigation
 // and action keys are intentionally swallowed so they edit the query instead of
-// moving the cursor or deleting files. Changing the query clears any
-// multi-selection so an action can never touch a row hidden by the filter.
+// moving the cursor.
 func (m model) updateLargeFilterInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyCtrlC:
@@ -998,18 +697,15 @@ func (m model) updateLargeFilterInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyBackspace, tea.KeyDelete:
 		if r := []rune(m.largeFilter); len(r) > 0 {
 			m.largeFilter = string(r[:len(r)-1])
-			m.largeMultiSelected = make(map[string]bool)
 			m.applyLargeFilter()
 		}
 		return m, nil
 	case tea.KeySpace:
 		m.largeFilter += " "
-		m.largeMultiSelected = make(map[string]bool)
 		m.applyLargeFilter()
 		return m, nil
 	case tea.KeyRunes:
 		m.largeFilter += string(msg.Runes)
-		m.largeMultiSelected = make(map[string]bool)
 		m.applyLargeFilter()
 		return m, nil
 	default:
@@ -1019,8 +715,7 @@ func (m model) updateLargeFilterInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // updateEntryFilterInput is the directory-view counterpart to
 // updateLargeFilterInput: it edits the drill-down filter query live, applies on
-// Enter, clears on Esc, and clears multi-selection on any query change so an
-// action can never touch a row hidden by the filter.
+// Enter, and clears on Esc.
 func (m model) updateEntryFilterInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyCtrlC:
@@ -1041,18 +736,15 @@ func (m model) updateEntryFilterInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyBackspace, tea.KeyDelete:
 		if r := []rune(m.entryFilter); len(r) > 0 {
 			m.entryFilter = string(r[:len(r)-1])
-			m.multiSelected = make(map[string]bool)
 			m.applyEntryFilter()
 		}
 		return m, nil
 	case tea.KeySpace:
 		m.entryFilter += " "
-		m.multiSelected = make(map[string]bool)
 		m.applyEntryFilter()
 		return m, nil
 	case tea.KeyRunes:
 		m.entryFilter += string(msg.Runes)
-		m.multiSelected = make(map[string]bool)
 		m.applyEntryFilter()
 		return m, nil
 	default:
@@ -1128,8 +820,6 @@ func (m *model) switchToOverviewMode() tea.Cmd {
 	m.largeFiles = nil
 	m.largeSelected = 0
 	m.largeOffset = 0
-	m.deleteConfirm = false
-	m.deleteTarget = nil
 	m.selected = 0
 	m.offset = 0
 	m.hydrateOverviewEntries()
@@ -1172,8 +862,6 @@ func (m model) enterSelectedDir() (tea.Model, tea.Cmd) {
 		m.scanning = true
 		m.isOverview = false
 		m.viewNeedsRefresh = false
-		m.multiSelected = make(map[string]bool)
-		m.largeMultiSelected = make(map[string]bool)
 
 		atomic.StoreInt64(m.filesScanned, 0)
 		atomic.StoreInt64(m.dirsScanned, 0)

@@ -1040,17 +1040,11 @@ func TestSparkline(t *testing.T) {
 	}
 }
 
-func TestRenderHeaderErrorReturnsMoleOnce(t *testing.T) {
-	header, mole := renderHeader(MetricsSnapshot{}, "boom", 0, 120, false)
+func TestRenderHeaderError(t *testing.T) {
+	header := renderHeader(MetricsSnapshot{}, "boom", 120)
 
-	if mole != "" {
-		t.Fatalf("renderHeader() mole return should be empty on error to avoid duplicate render, got %q", mole)
-	}
 	if !strings.Contains(header, "ERROR: boom") {
 		t.Fatalf("renderHeader() missing error text, got %q", header)
-	}
-	if strings.Count(header, "/\\_/\\") != 1 {
-		t.Fatalf("renderHeader() should contain one mole frame in error state, got %d", strings.Count(header, "/\\_/\\"))
 	}
 }
 
@@ -1213,7 +1207,7 @@ func TestRenderHeaderUsesFastMetricSpecFallbacks(t *testing.T) {
 		Disks:       []DiskStatus{{Mount: "/", Total: diskSize}},
 	}
 
-	header, _ := renderHeader(m, "", 0, 120, true)
+	header := renderHeader(m, "", 120)
 	plain := stripANSI(header)
 	wantRAM := "RAM " + humanBytes(ram)
 	wantDisk := "Disk " + humanBytes(diskSize)
@@ -1239,7 +1233,7 @@ func TestRenderHeaderWrapsOnNarrowWidth(t *testing.T) {
 		Uptime: "10d 3h",
 	}
 
-	header, _ := renderHeader(m, "", 0, 38, true)
+	header := renderHeader(m, "", 38)
 	for line := range strings.Lines(header) {
 		if lipgloss.Width(stripANSI(line)) > 38 {
 			t.Fatalf("renderHeader() line exceeds width: %q", line)
@@ -1261,7 +1255,7 @@ func TestRenderHeaderHidesOSAndUptimeOnNarrowWidth(t *testing.T) {
 		Uptime: "10d 3h",
 	}
 
-	header, _ := renderHeader(m, "", 0, 80, true)
+	header := renderHeader(m, "", 80)
 	plain := stripANSI(header)
 	if strings.Contains(plain, "macOS 15.0") {
 		t.Fatalf("renderHeader() narrow width should hide os version, got %q", plain)
@@ -1284,7 +1278,7 @@ func TestRenderHeaderKeepsLabeledSpecsOnCompactWidth(t *testing.T) {
 		GPU: []GPUStatus{{CoreCount: 20}},
 	}
 
-	header, _ := renderHeader(m, "", 0, 80, true)
+	header := renderHeader(m, "", 80)
 	plain := stripANSI(header)
 	if !strings.Contains(plain, "RAM 48G") || !strings.Contains(plain, "Disk 926GB") {
 		t.Fatalf("renderHeader() compact width should keep labeled specs, got %q", plain)
@@ -1314,7 +1308,7 @@ func TestRenderHeaderDropsLowPriorityInfoToStaySingleLine(t *testing.T) {
 		Uptime: "9d 13h",
 	}
 
-	header, _ := renderHeader(m, "", 0, 100, true)
+	header := renderHeader(m, "", 100)
 	plain := stripANSI(header)
 	if strings.Contains(plain, "\n") {
 		t.Fatalf("renderHeader() should stay single line when trimming low-priority fields, got %q", plain)
@@ -1663,20 +1657,18 @@ func TestModelViewPadsToTerminalHeight(t *testing.T) {
 	}
 }
 
-func TestModelViewErrorRendersSingleMole(t *testing.T) {
+func TestModelViewErrorRendersErrorMessage(t *testing.T) {
 	m := model{
 		width:      120,
 		height:     40,
 		ready:      true,
 		metrics:    MetricsSnapshot{},
 		errMessage: "boom",
-		animFrame:  0,
-		catHidden:  false,
 	}
 
 	view := m.View()
-	if strings.Count(view, "/\\_/\\") != 1 {
-		t.Fatalf("model.View() should render one mole frame in error state, got %d", strings.Count(view, "/\\_/\\"))
+	if !strings.Contains(view, "ERROR: boom") {
+		t.Fatalf("model.View() should render the error message, got %q", view)
 	}
 }
 

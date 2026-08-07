@@ -7,7 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/tw93/mole/internal/units"
+	"github.com/tw93/dua/internal/units"
 )
 
 var (
@@ -42,105 +42,13 @@ const (
 	processWideMinWidth = 46
 )
 
-// Mole body frames (facing right).
-var moleBody = [][]string{
-	{
-		`     /\_/\`,
-		` ___/ o o \`,
-		`/___   =-= /`,
-		`\____)-m-m)`,
-	},
-	{
-		`     /\_/\`,
-		` ___/ o o \`,
-		`/___   =-= /`,
-		`\____)mm__)`,
-	},
-	{
-		`     /\_/\`,
-		` ___/ · · \`,
-		`/___   =-= /`,
-		`\___)-m__m)`,
-	},
-	{
-		`     /\_/\`,
-		` ___/ o o \`,
-		`/___   =-= /`,
-		`\____)-mm-)`,
-	},
-}
-
-// Mirror mole body frames (facing left).
-var moleBodyMirror = [][]string{
-	{
-		`    /\_/\`,
-		`   / o o \___`,
-		`  \ =-=   ___\`,
-		`  (m-m-(____/`,
-	},
-	{
-		`    /\_/\`,
-		`   / o o \___`,
-		`  \ =-=   ___\`,
-		`  (__mm(____/`,
-	},
-	{
-		`    /\_/\`,
-		`   / · · \___`,
-		`  \ =-=   ___\`,
-		`  (m__m-(___/`,
-	},
-	{
-		`    /\_/\`,
-		`   / o o \___`,
-		`  \ =-=   ___\`,
-		`  (-mm-(____/`,
-	},
-}
-
-// getMoleFrame renders the animated mole.
-func getMoleFrame(animFrame int, termWidth int) string {
-	moleWidth := 15
-	maxPos := max(termWidth-moleWidth, 0)
-
-	cycleLength := maxPos * 2
-	if cycleLength == 0 {
-		cycleLength = 1
-	}
-	pos := animFrame % cycleLength
-	movingLeft := pos > maxPos
-	if movingLeft {
-		pos = cycleLength - pos
-	}
-
-	// Use mirror frames when moving left
-	var frames [][]string
-	if movingLeft {
-		frames = moleBodyMirror
-	} else {
-		frames = moleBody
-	}
-
-	bodyIdx := animFrame % len(frames)
-	body := frames[bodyIdx]
-
-	padding := strings.Repeat(" ", pos)
-	var lines []string
-
-	for _, line := range body {
-		lines = append(lines, padding+line)
-	}
-
-	return strings.Join(lines, "\n")
-}
-
 type cardData struct {
 	icon  string
 	title string
 	lines []string
 }
 
-func renderHeader(m MetricsSnapshot, errMsg string, animFrame int, termWidth int, catHidden bool) (string, string) {
+func renderHeader(m MetricsSnapshot, errMsg string, termWidth int) string {
 	if termWidth <= 0 {
 		termWidth = 80
 	}
@@ -253,22 +161,10 @@ func renderHeader(m MetricsSnapshot, errMsg string, animFrame int, termWidth int
 		}
 	}
 
-	// Show cat unless hidden - render mole centered below header
-	var mole string
-	if !catHidden {
-		mole = getMoleFrame(animFrame, termWidth)
-	}
-
 	if errMsg != "" {
-		if mole == "" {
-			return lipgloss.JoinVertical(lipgloss.Left, headerLine, "", dangerStyle.Render("ERROR: "+errMsg)), ""
-		}
-		return lipgloss.JoinVertical(lipgloss.Left, headerLine, "", mole, dangerStyle.Render("ERROR: "+errMsg)), ""
+		return lipgloss.JoinVertical(lipgloss.Left, headerLine, "", dangerStyle.Render("ERROR: "+errMsg))
 	}
-	if mole == "" {
-		return headerLine, ""
-	}
-	return headerLine, mole
+	return headerLine
 }
 
 func getScoreStyle(score int) lipgloss.Style {

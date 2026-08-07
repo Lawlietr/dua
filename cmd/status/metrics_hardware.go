@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"runtime"
 	"strings"
 	"time"
@@ -10,11 +11,18 @@ import (
 
 func collectHardware(totalRAM uint64, disks []DiskStatus) HardwareInfo {
 	if runtime.GOOS != "darwin" {
+		diskSize := "Unknown"
+		if len(disks) > 0 {
+			diskSize = humanBytes(disks[0].Total)
+		}
+		if runtime.GOOS == "linux" {
+			return collectLinuxHardware(totalRAM, diskSize)
+		}
 		return HardwareInfo{
 			Model:       "Unknown",
 			CPUModel:    runtime.GOARCH,
 			TotalRAM:    humanBytes(totalRAM),
-			DiskSize:    "Unknown",
+			DiskSize:    diskSize,
 			OSVersion:   runtime.GOOS,
 			RefreshRate: "",
 		}
@@ -80,6 +88,70 @@ func collectHardware(totalRAM uint64, disks []DiskStatus) HardwareInfo {
 		OSVersion:   osVersion,
 		RefreshRate: refreshRate,
 	}
+}
+
+// collectLinuxHardware gathers model, CPU, and OS identity from the standard
+// Linux sysfs and text sources. Reads are plain file reads, so no subprocess
+// is spawned and the refresh stays cheap.
+func collectLinuxHardware(totalRAM uint64, diskSize string) HardwareInfo {
+	info := HardwareInfo{
+		Model:       readFirstLine("/sys/devices/virtual/dmi/id/product_name"),
+		CPUModel:    readCPUModel(),
+		TotalRAM:    humanBytes(totalRAM),
+		DiskSize:    diskSize,
+		OSVersion:   readOSRelease(),
+		RefreshRate: "",
+	}
+	if info.Model == "" {
+		info.Model = "Linux PC"
+	}
+	return info
+}
+
+// readCPUModel returns the first CPU model name from /proc/cpuinfo. It accepts
+// the "model name" (x86) and "Hardware"/"Processor" (ARM) keys.
+func readCPUModel() string {
+	data, err := os.ReadFile("/proc/cpuinfo")
+	if err != nil {
+		return ""
+	}
+	for line := range strings.Lines(string(data)) {
+		i := strings.Index(line, ":")
+		if i < 0 {
+			continue
+		}
+		switch strings.TrimSpace(line[:i]) {
+		case "model name", "Hardware", "Processor":
+			if v := strings.TrimSpace(line[i+1:]); v != "" {
+				return v
+			}
+		}
+	}
+	return ""
+}
+
+// readOSRelease returns the PRETTY_NAME from /etc/os-release, or "" when the
+// file is missing or unparsable.
+func readOSRelease() string {
+	data, err := os.ReadFile("/etc/os-release")
+	if err != nil {
+		return ""
+	}
+	for line := range strings.Lines(string(data)) {
+		if strings.HasPrefix(line, "PRETTY_NAME=") {
+			return strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "PRETTY_NAME=")), `"`)
+		}
+	}
+	return ""
+}
+
+// readFirstLine returns the trimmed first line of a file, or "" on error.
+func readFirstLine(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(strings.Split(string(data), "\n")[0])
 }
 
 // parseRefreshRate extracts the highest refresh rate from system_profiler display output.

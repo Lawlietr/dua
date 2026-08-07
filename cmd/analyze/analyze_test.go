@@ -1,5 +1,3 @@
-//go:build darwin
-
 package main
 
 import (
@@ -9,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -264,38 +263,6 @@ func TestPerformScanForJSONCountsTopLevelFiles(t *testing.T) {
 
 	if result.TotalFiles != 2 {
 		t.Fatalf("expected 2 files in JSON output, got %d", result.TotalFiles)
-	}
-}
-
-func TestDeletePathWithProgress(t *testing.T) {
-	skipIfFinderUnavailable(t)
-
-	parent := t.TempDir()
-	target := filepath.Join(parent, "target")
-	if err := os.MkdirAll(target, 0o755); err != nil {
-		t.Fatalf("create target: %v", err)
-	}
-
-	files := []string{
-		filepath.Join(target, "one.txt"),
-		filepath.Join(target, "two.txt"),
-	}
-	for _, f := range files {
-		if err := os.WriteFile(f, []byte("content"), 0o644); err != nil {
-			t.Fatalf("write %s: %v", f, err)
-		}
-	}
-
-	var counter int64
-	count, err := trashPathWithProgress(target, &counter)
-	if err != nil {
-		t.Fatalf("trashPathWithProgress returned error: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("expected one path-level Trash operation, got %d", count)
-	}
-	if _, err := os.Stat(target); !os.IsNotExist(err) {
-		t.Fatalf("expected target to be moved to Trash, stat err=%v", err)
 	}
 }
 
@@ -750,7 +717,7 @@ func TestPruneAnalyzerCacheDirEnforcesByteCap(t *testing.T) {
 	}
 }
 
-// The legacy flat store shares `~/.cache/mole` with shell-side state, so the
+// The legacy flat store shares `~/.cache/dua` with shell-side state, so the
 // sweep is scoped to the two names the analyzer ever wrote there.
 func TestSweepLegacyAnalyzerCacheRemovesOnlyAnalyzerFiles(t *testing.T) {
 	root := t.TempDir()
@@ -1190,9 +1157,9 @@ func TestGetCacheDirIsAnalyzerScoped(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	root, err := getMoleCacheRoot()
+	root, err := getDuaCacheRoot()
 	if err != nil {
-		t.Fatalf("getMoleCacheRoot: %v", err)
+		t.Fatalf("getDuaCacheRoot: %v", err)
 	}
 	cacheDir, err := getCacheDir()
 	if err != nil {
@@ -1255,7 +1222,7 @@ func TestScanPathConcurrentWarmsChildDirectoryCache(t *testing.T) {
 
 // A cache file costs a 4KB block plus an inode to memoize what one readdir
 // returns, so cheap subtrees must not get one. Unbounded admission is what grew
-// ~/.cache/mole to 1.88M files / 7.82GB on a user's Mac.
+// ~/.cache/dua to 1.88M files / 7.82GB on a user's Mac.
 func TestScanPathConcurrentSkipsCacheForCheapSubdir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -1401,6 +1368,7 @@ func TestShouldPersistSubdirCacheThresholds(t *testing.T) {
 }
 
 func TestScanPathConcurrentUsesChildCacheLargeFiles(t *testing.T) {
+	skipIfBlockAccountingUnreliable(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -1469,6 +1437,9 @@ func TestScanPathConcurrentUsesChildCacheLargeFiles(t *testing.T) {
 }
 
 func TestScanPathConcurrentWarmsChildCachesWithoutRecursiveSpotlight(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("Spotlight invocation behavior is macOS-only")
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -2484,28 +2455,43 @@ func TestMeasureOverviewSize(t *testing.T) {
 }
 
 func TestIsHandledByMoClean(t *testing.T) {
+	home := "/Users/test"
+	caches := "/Users/test/Library/Caches/com.example"
+	logs := "/Users/test/Library/Logs/DiagnosticReports"
+	state := "/Users/test/Library/Saved Application State/com.example"
+	trash := "/Users/test/.Trash/deleted-file"
+	diag := "/Users/test/Library/DiagnosticReports/crash.log"
+	if runtime.GOOS == "linux" {
+		home = "/home/test"
+		caches = "/home/test/.cache/com.example"
+		logs = "/var/log/messages"
+		state = "/home/test/.local/state/molecule"
+		trash = "/home/test/.local/share/Trash/deleted-file"
+		diag = "/home/test/.local/state/foo"
+	}
+
 	tests := []struct {
 		name string
 		path string
 		want bool
 	}{
 		// Paths mo clean handles.
-		{"user caches", "/Users/test/Library/Caches/com.example", true},
-		{"user logs", "/Users/test/Library/Logs/DiagnosticReports", true},
-		{"saved app state", "/Users/test/Library/Saved Application State/com.example", true},
-		{"user trash", "/Users/test/.Trash/deleted-file", true},
-		{"diagnostic reports", "/Users/test/Library/DiagnosticReports/crash.log", true},
+		{"user caches", caches, true},
+		{"user logs", logs, true},
+		{"saved app state", state, true},
+		{"user trash", trash, true},
+		{"diagnostic reports", diag, true},
 
 		// Paths mo clean does NOT handle.
-		{"project node_modules", "/Users/test/project/node_modules", false},
-		{"project build", "/Users/test/project/build", false},
-		{"home directory", "/Users/test", false},
+		{"project node_modules", home + "/project/node_modules", false},
+		{"project build", home + "/project/build", false},
+		{"home directory", home, false},
 		{"random path", "/some/random/path", false},
 		{"empty string", "", false},
 
 		// Partial matches should not trigger (case sensitive).
 		{"lowercase caches", "/users/test/library/caches/foo", false},
-		{"different trash path", "/Users/test/Trash/file", false}, // Missing dot prefix
+		{"different trash path", home + "/Trash/file", false}, // Missing dot prefix
 	}
 
 	for _, tt := range tests {
@@ -2848,6 +2834,7 @@ func TestLoadStaleCacheFromDiskExpiresByStaleTTL(t *testing.T) {
 }
 
 func TestScanPathPermissionError(t *testing.T) {
+	skipIfRoot(t)
 	root := t.TempDir()
 	lockedDir := filepath.Join(root, "locked")
 	if err := os.Mkdir(lockedDir, 0o755); err != nil {
@@ -2921,90 +2908,23 @@ func TestCalculateDirSizeFastHighFanoutCompletes(t *testing.T) {
 
 func TestSystemOverviewRootsDefaultsToRealSystemPaths(t *testing.T) {
 	roots := systemOverviewRoots()
-	if len(roots) != 2 {
-		t.Fatalf("expected 2 default system roots, got %d", len(roots))
+	wantPaths := []string{"/usr", "/opt", "/var", "/home"}
+	if runtime.GOOS == "darwin" {
+		wantPaths = []string{"/Applications", "/Library"}
 	}
-	if roots[0].Path != "/Applications" || roots[1].Path != "/Library" {
-		t.Fatalf("unexpected default system roots: %q, %q", roots[0].Path, roots[1].Path)
+	if len(roots) != len(wantPaths) {
+		t.Fatalf("expected %d default system roots, got %d", len(wantPaths), len(roots))
+	}
+	for i, want := range wantPaths {
+		if roots[i].Path != want {
+			t.Fatalf("unexpected default system roots: got %q, want %q", roots[i].Path, want)
+		}
 	}
 	for _, root := range roots {
 		if root.Size != -1 || !root.IsDir {
 			t.Fatalf("default root %q must start pending and be a dir, got size=%d isDir=%v",
 				root.Path, root.Size, root.IsDir)
 		}
-	}
-}
-
-func TestDeleteViewHidesZeroTally(t *testing.T) {
-	// The delete counter is path-level and only advances once a move finishes, so a
-	// single large directory sits at zero for the whole operation. Printing
-	// "0 items removed" there reads as a stalled delete.
-	var counter int64
-	m := model{deleting: true, deleteCount: &counter}
-
-	view := m.View()
-	if strings.Contains(view, "0 items") {
-		t.Fatalf("expected no zero tally while nothing has completed, got:\n%s", view)
-	}
-	if !strings.Contains(view, "moving to Trash") {
-		t.Fatalf("expected a progress line while deleting, got:\n%s", view)
-	}
-
-	atomic.StoreInt64(&counter, 2)
-	view = m.View()
-	if !strings.Contains(view, "2") || !strings.Contains(view, "items") {
-		t.Fatalf("expected the tally once paths completed, got:\n%s", view)
-	}
-}
-
-func TestDeleteProgressPartialFailureRemovesSucceededPathsAndRefreshes(t *testing.T) {
-	var filesScanned int64
-	var dirsScanned int64
-	var bytesScanned int64
-	var currentPath atomic.Value
-	parent := t.TempDir()
-	removed := filepath.Join(parent, "removed")
-	failed := filepath.Join(parent, "failed")
-
-	m := model{
-		path:         parent,
-		entries:      []dirEntry{{Path: removed, Size: 10}, {Path: failed, Size: 20}},
-		entriesAll:   []dirEntry{{Path: removed, Size: 10}, {Path: failed, Size: 20}},
-		totalSize:    30,
-		deleting:     true,
-		filesScanned: &filesScanned,
-		dirsScanned:  &dirsScanned,
-		bytesScanned: &bytesScanned,
-		currentPath:  &currentPath,
-		cache: map[string]historyEntry{
-			parent: {},
-		},
-		multiSelected:      map[string]bool{removed: true, failed: true},
-		largeMultiSelected: map[string]bool{},
-	}
-
-	updated, cmd := m.Update(deleteProgressMsg{
-		done:         true,
-		err:          fmt.Errorf("permission denied"),
-		count:        1,
-		removedPaths: []string{removed},
-	})
-	got := updated.(model)
-
-	if len(got.entries) != 1 || got.entries[0].Path != failed {
-		t.Fatalf("expected only failed path to remain, got %#v", got.entries)
-	}
-	if got.totalSize != 20 {
-		t.Fatalf("expected successful removal to update total size, got %d", got.totalSize)
-	}
-	if !strings.Contains(got.status, "Deleted 1 items; some failed") {
-		t.Fatalf("expected partial-failure status, got %q", got.status)
-	}
-	if entry := got.cache[parent]; !entry.NeedsRefresh {
-		t.Fatal("expected current path cache to be marked for refresh")
-	}
-	if cmd == nil {
-		t.Fatal("expected partial success to trigger a rescan")
 	}
 }
 
