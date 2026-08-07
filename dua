@@ -6,12 +6,38 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Resolve a binary next to the router (flat install), under bin/ (repo
+# layout), or from PATH. Empty when not found.
+resolve_bin() {
+    local name="$1"
+    if [ -x "$SCRIPT_DIR/$name" ]; then
+        printf '%s\n' "$SCRIPT_DIR/$name"
+    elif [ -x "$SCRIPT_DIR/bin/$name" ]; then
+        printf '%s\n' "$SCRIPT_DIR/bin/$name"
+    elif command -v "$name" >/dev/null 2>&1; then
+        command -v "$name"
+    fi
+}
+
+# Dispatch to a binary, forwarding all remaining arguments.
+run_bin() {
+    local name="$1"
+    shift
+    local bin
+    bin="$(resolve_bin "$name")"
+    if [ -z "$bin" ]; then
+        echo "dua: $name not found (run 'make build' or install dua to your PATH)" >&2
+        exit 1
+    fi
+    exec "$bin" "$@"
+}
+
 case "${1:-}" in
     "analyze" | "analyse")
-        exec "$SCRIPT_DIR/bin/dua-analyze" "${@:2}"
+        run_bin dua-analyze "${@:2}"
         ;;
     "status")
-        exec "$SCRIPT_DIR/bin/dua-status" "${@:2}"
+        run_bin dua-status "${@:2}"
         ;;
     "-h" | "--help" | "")
         cat <<'EOF'

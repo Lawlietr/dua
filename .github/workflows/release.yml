@@ -1,0 +1,75 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build binaries
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p bin
+          go build -trimpath -ldflags="-s -w" -o bin/dua-analyze ./cmd/analyze
+          go build -trimpath -ldflags="-s -w" -o bin/dua-status ./cmd/status
+      - name: Package tarball
+        run: |
+          mkdir -p stage dist
+          cp dua stage/
+          cp bin/dua-analyze bin/dua-status stage/
+          tar -czf "dist/dua-linux-${{ matrix.arch }}.tar.gz" -C stage dua dua-analyze dua-status
+          (cd dist && sha256sum "dua-linux-${{ matrix.arch }}.tar.gz" > "dua-linux-${{ matrix.arch }}.tar.gz.sha256")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dua-linux-${{ matrix.arch }}
+          path: |
+            dist/dua-linux-${{ matrix.arch }}.tar.gz
+            dist/dua-linux-${{ matrix.arch }}.tar.gz.sha256
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: dua ${{ github.ref_name }}
+          body: |
+            dua ${{ github.ref_name }}
+
+            Linux binaries for amd64 and arm64, built with CGO disabled.
+
+            Install:
+            ```bash
+            ARCH=$(uname -m); case "$ARCH" in x86_64) ARCH=amd64;; aarch64|arm64) ARCH=arm64;; esac
+            mkdir -p ~/.local/bin
+            curl -fsSL "https://github.com/Lawlietr/Mole/releases/latest/download/dua-linux-${ARCH}.tar.gz" | tar -xz -C ~/.local/bin
+            ```
+          files: |
+            dist/dua-linux-amd64.tar.gz
+            dist/dua-linux-amd64.tar.gz.sha256
+            dist/dua-linux-arm64.tar.gz
+            dist/dua-linux-arm64.tar.gz.sha256

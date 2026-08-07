@@ -1,6 +1,7 @@
 <div align="center">
   <h1>dua</h1>
   <p><em>Disk analysis and system status for Linux, from the terminal.</em></p>
+  <p>English | <a href="README.zh-TW.md">繁體中文</a></p>
 </div>
 
 <p align="center">
