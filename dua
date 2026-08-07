@@ -32,6 +32,143 @@ run_bin() {
     exec "$bin" "$@"
 }
 
+# ---------------------------------------------------------------------------
+# dua update — check GitHub for a newer release and replace binaries in-place.
+# ---------------------------------------------------------------------------
+
+# Print the nearest tag the working tree is based on, or the embedded version.
+current_tag() {
+    local tag ver
+    if [ -d "$SCRIPT_DIR/.git" ] || git rev-parse --git-dir >/dev/null 2>&1; then
+        tag="$(git describe --tags --abbrev=0 2>/dev/null)" || true
+        if [ -n "$tag" ]; then
+            printf '%s\n' "$tag"
+            return 0
+        fi
+    fi
+    # Fallback: extract the leading v*.*.* from the embedded version string.
+    ver="$(dua version 2>/dev/null | head -1)" || true
+    printf '%s' "$ver" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1
+}
+
+# Normalize a version string to "vX.Y.Z" for comparison.
+normalize_version() {
+    printf '%s' "$1" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1
+}
+
+# Compare two normalized versions. Returns 0 if $1 < $2, 1 if equal, 2 if $1 > $2.
+version_cmp() {
+    local a b
+    a="$(normalize_version "$1")"
+    b="$(normalize_version "$2")"
+    [ "$a" = "$b" ] && return 1
+    # Use sort -V for version-aware ordering.
+    local smallest
+    smallest="$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -1)"
+    [ "$smallest" = "$a" ] && return 0 || return 2
+}
+
+# Detect the tarball name for the current architecture.
+arch_tarball() {
+    local arch
+    arch="$(uname -m)"
+    case "$arch" in
+        x86_64)  printf 'dua-linux-amd64' ;;
+        aarch64|arm64) printf 'dua-linux-arm64' ;;
+        *) echo "dua: unsupported architecture: $arch" >&2; return 1 ;;
+    esac
+}
+
+do_update() {
+    local latest_tag current ver_url sha_url tarball_name tmpdir tmp_tarball tmp_sha
+
+    # Resolve the install prefix (where the router lives).
+    local install_dir
+    install_dir="$(cd "$SCRIPT_DIR" && pwd)"
+
+    echo "dua: checking for updates ..."
+
+    # Fetch latest release info from GitHub API.
+    local release_json
+    release_json="$(curl -fsSL --max-time 10 \
+        https://api.github.com/repos/Lawlietr/dua/releases/latest 2>/dev/null)" || {
+        echo "dua: failed to fetch release info from GitHub" >&2
+        exit 1
+    }
+
+    latest_tag="$(printf '%s' "$release_json" | grep -oE '"tag_name":\s*"v[0-9]+\.[0-9]+\.[0-9]+"' \
+        | head -1 | sed 's/.*"tag_name":\s*"\(v[0-9]*\.[0-9]*\.[0-9]*\)".*/\1/')"
+
+    if [ -z "$latest_tag" ]; then
+        echo "dua: could not parse latest tag from GitHub response" >&2
+        exit 1
+    fi
+
+    current="$(current_tag)"
+    echo "dua: current version  : ${current:-unknown}"
+    echo "dua: latest release   : ${latest_tag}"
+
+    if version_cmp "$current" "$latest_tag"; then
+        echo "dua: already up to date ($latest_tag)"
+        return 0
+    fi
+
+    tarball_name="$(arch_tarball)"
+    ver_url="https://github.com/Lawlietr/dua/releases/download/${latest_tag}/${tarball_name}.tar.gz"
+    sha_url="${ver_url}.sha256"
+
+    echo "dua: downloading ${tarball_name}.tar.gz ..."
+    tmpdir="$(mktemp -d)"
+    tmp_tarball="${tmpdir}/${tarball_name}.tar.gz"
+    tmp_sha="${tmpdir}/${tarball_name}.tar.gz.sha256"
+
+    if ! curl -fsSL --max-time 30 -o "$tmp_tarball" "$ver_url"; then
+        echo "dua: failed to download ${tarball_name}.tar.gz" >&2
+        rm -rf "$tmpdir"
+        exit 1
+    fi
+
+    echo "dua: downloading ${tarball_name}.tar.gz.sha256 ..."
+    if ! curl -fsSL --max-time 10 -o "$tmp_sha" "$sha_url"; then
+        echo "dua: failed to download checksum file" >&2
+        rm -rf "$tmpdir"
+        exit 1
+    fi
+
+    echo "dua: verifying checksum ..."
+    (cd "$tmpdir" && sha256sum -c "$(basename "$tmp_sha")") || {
+        echo "dua: checksum mismatch — aborting" >&2
+        rm -rf "$tmpdir"
+        exit 1
+    }
+
+    echo "dua: extracting ..."
+    mkdir -p "${tmpdir}/stage"
+    tar -xzf "$tmp_tarball" -C "${tmpdir}/stage"
+
+    # Check write permission on the install directory.
+    if [ ! -w "$install_dir" ]; then
+        echo "dua: permission denied — cannot write to $install_dir" >&2
+        echo "dua: try running with sudo, or install to ~/.local/bin instead" >&2
+        rm -rf "$tmpdir"
+        exit 1
+    fi
+
+    # Back up existing binaries before replacing.
+    cp "$install_dir/dua"              "${tmpdir}/stage/dua.bak"              2>/dev/null || true
+    cp "$install_dir/dua-analyze"      "${tmpdir}/stage/dua-analyze.bak"      2>/dev/null || true
+    cp "$install_dir/dua-status"       "${tmpdir}/stage/dua-status.bak"       2>/dev/null || true
+
+    cp "${tmpdir}/stage/dua"           "$install_dir/dua"
+    cp "${tmpdir}/stage/dua-analyze"   "$install_dir/dua-analyze"
+    cp "${tmpdir}/stage/dua-status"    "$install_dir/dua-status"
+
+    rm -rf "$tmpdir"
+
+    echo "dua: updated ${current:-unknown} → ${latest_tag}"
+    echo "dua: run 'dua version' to confirm"
+}
+
 case "${1:-}" in
     "analyze" | "analyse")
         run_bin dua-analyze "${@:2}"
@@ -42,6 +179,9 @@ case "${1:-}" in
     "version")
         run_bin dua-status version
         ;;
+    "update")
+        do_update
+        ;;
     "-h" | "--help" | "")
         cat <<'EOF'
 dua - disk analysis and system status for Linux
@@ -50,6 +190,7 @@ Usage:
   dua analyze [PATH]   Visual disk explorer (reads only, no cleanup)
   dua status           Live system health dashboard
   dua version           Show version and commit info
+  dua update            Check GitHub and update to the latest release
   dua help             Show this help
 
 Run 'dua <command> --help' for command-specific flags.
@@ -63,6 +204,7 @@ Commands:
   analyze [PATH]   Visual disk explorer. No PATH scans the machine overview.
   status           Live system health dashboard (TUI, --json, --watch).
   version           Show version and commit info.
+  update           Check GitHub for a newer release and update in-place.
 
 Run 'dua analyze --help' or 'dua status --help' for command-specific flags.
 EOF

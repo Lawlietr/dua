@@ -29,7 +29,7 @@ dua is a terminal-first Linux maintenance inspection toolkit. Its core job is to
 
 Before accepting a new feature, answer these questions in the PR, issue, or review notes when the fit is not obvious:
 
-1. Does it clearly belong to analyze, status, or the router?
+1. Does it clearly belong to analyze, status, update, or the router?
 2. Is it read-only, previewable, testable, and explainable in one terminal screen?
 3. Can the user verify what dua reports before trusting it?
 4. Is the target data locally rebuildable, disposable, or backed by exact path evidence?
@@ -40,7 +40,7 @@ If the answer is no or unclear, decline the feature, narrow it, or park it until
 ## Repository Map
 
 - `AGENTS.md` is the cross-agent source of truth. `CLAUDE.md` must remain a symlink to it so Claude and Codex receive the same project contract.
-- `dua` - the CLI entrypoint. It is a **router only**: it parses args and dispatches to the Go binaries. Business logic does not belong here.
+- `dua` - the CLI entrypoint. It is a **router only**: it parses args and dispatches to the Go binaries (or runs shell logic for `update`). Business logic does not belong here.
 - `cmd/analyze/` - the disk-analysis Go binary (TUI + `--json`). `main.go` is bootstrap only; `model.go` holds types and accessor methods; `update.go` holds the Bubble Tea Update chain; `scanner.go` owns traversal and concurrency budgets.
 - `cmd/status/` - the system status Go binary (TUI, `--json`, `--watch`). `view.go` renders only; collection and JSON/NDJSON contracts live in the other `cmd/status/` files.
 - `internal/units/` - shared byte formatting.
@@ -65,6 +65,7 @@ go test ./cmd/status
 ./dua analyze --json /some/path
 ./dua analyze        # overview TUI (no PATH)
 ./dua status         # TUI dashboard
+./dua update         # Check GitHub and update to the latest release
 gofmt -l cmd/ internal/
 ```
 
@@ -115,3 +116,4 @@ A single-binary design (one `dua` executable with subcommands) would be cleaner 
 
 - [x] Include version in `dua status` and `dua analyze` main output (TUI).
 - [x] Include version in `dua status` and `dua analyze` JSON output.
+- [x] Add `dua update` command to check GitHub and update in-place.

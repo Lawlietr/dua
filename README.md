@@ -67,6 +67,10 @@ Environment: `DUA_ANALYZE_PATH` sets the scan target when no PATH is given; `DUA
 
 Shows version and commit information.
 
+### `dua update`
+
+Checks GitHub for a newer release and updates in-place (downloads tarball, verifies SHA-256, replaces binaries). Run with `sudo` if installed in a system directory.
+
 ## How it Works
 
 - `dua` is a thin bash router that dispatches to two Go binaries (`dua-analyze`, `dua-status`).

@@ -67,6 +67,10 @@ cp bin/dua-analyze bin/dua-status /usr/local/bin/
 
 顯示版本與提交資訊。
 
+### `dua update`
+
+檢查 GitHub 是否有新版本，並就地更新（下載 tarball、驗證 SHA-256、替換二進位檔）。若安裝在系統目錄，需使用 `sudo` 執行。
+
 ## 運作原理
 
 - `dua` 是薄型 bash router，派發到兩個 Go 二進制（`dua-analyze`、`dua-status`）。
