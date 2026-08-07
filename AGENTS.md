@@ -107,4 +107,5 @@ These files are intentionally large. Do not start by splitting them. Keep edits 
 
 ## Next Steps
 
-- [x] Include version in `dua status` and `dua analyze` main output (TUI and JSON).
+- [x] Include version in `dua status` and `dua analyze` main output (TUI).
+- [ ] Include version in `dua status` and `dua analyze` JSON output.
