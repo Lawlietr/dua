@@ -1,0 +1,107 @@
+# upload-darwin — one-off pipeline to attach a darwin/arm64 tarball to an
+# existing GitHub Release (v0.2.0). Cross-compiles on Linux, smoke-tests the
+# result on a real Apple Silicon runner, then uploads behind an explicit
+# confirmation guard. Safe to delete once the next regular release ships
+# darwin targets from the main release workflow.
+name: upload-darwin
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref to build from'
+        required: false
+        default: 'main'
+      version:
+        description: 'Version string embedded in the binaries'
+        required: false
+        default: 'v0.2.0'
+      confirm_tag:
+        description: 'Type exactly "v0.2.0" to enable release upload; leave empty for a dry run'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: cross-compile darwin/arm64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build binaries
+        env:
+          GOOS: darwin
+          GOARCH: arm64
+          CGO_ENABLED: "0"
+          VERSION: ${{ inputs.version || 'v0.2.0' }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          mkdir -p bin
+          go build -trimpath -ldflags="-s -w -X 'main.version=$VERSION' -X 'main.commit=$COMMIT'" -o bin/dua-analyze ./cmd/analyze
+          go build -trimpath -ldflags="-s -w -X 'main.version=$VERSION' -X 'main.commit=$COMMIT'" -o bin/dua-status ./cmd/status
+      - name: Package tarball
+        run: |
+          mkdir -p stage dist
+          cp dua stage/
+          cp bin/dua-analyze bin/dua-status stage/
+          tar -czf "dist/dua-darwin-arm64.tar.gz" -C stage dua dua-analyze dua-status
+          (cd dist && sha256sum "dua-darwin-arm64.tar.gz" > "dua-darwin-arm64.tar.gz.sha256")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dua-darwin-arm64
+          path: |
+            dist/dua-darwin-arm64.tar.gz
+            dist/dua-darwin-arm64.tar.gz.sha256
+
+  smoke:
+    name: smoke on macos-14 (Apple Silicon)
+    needs: build
+    runs-on: macos-14
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dua-darwin-arm64
+          path: dist
+      - name: Verify checksum and extract
+        run: |
+          cd dist
+          shasum -a 256 -c dua-darwin-arm64.tar.gz.sha256
+          mkdir prefix && tar -xzf dua-darwin-arm64.tar.gz -C prefix
+      - name: Router sanity
+        run: bash -n dist/prefix/dua
+      - name: Run binaries and validate JSON output
+        run: |
+          cd dist/prefix
+          ./dua version
+          ./dua version | grep -Eq '^dua version v'
+          ./dua analyze --json "$RUNNER_TEMP" > analyze.json
+          jq -e '.version' analyze.json > /dev/null
+          ./dua status --json > status.json
+          jq -e '.version' status.json > /dev/null
+          echo "darwin/arm64 smoke OK"
+
+  upload:
+    name: attach assets to v0.2.0 release
+    needs: smoke
+    if: ${{ inputs.confirm_tag == 'v0.2.0' }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dua-darwin-arm64
+          path: dist
+      - name: Upload to existing release (no clobber)
+        run: |
+          gh release upload v0.2.0 \
+            dist/dua-darwin-arm64.tar.gz \
+            dist/dua-darwin-arm64.tar.gz.sha256 \
+            --repo Lawlietr/dua
