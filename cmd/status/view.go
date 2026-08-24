@@ -40,6 +40,10 @@ const (
 	metricLabelWidth    = 6
 	processMemoryWidth  = 7
 	processWideMinWidth = 46
+
+	// Stands in for a value that has not been measured yet, so a card keeps its
+	// shape from the first frame instead of growing when the data lands.
+	placeholderValue = "--"
 )
 
 type cardData struct {
@@ -360,7 +364,9 @@ func renderDiskCard(disks []DiskStatus, io DiskIOStatus, _ uint64, _ bool) cardD
 		} else if len(disks) == 1 {
 			lines = append(lines, formatDiskMetaLine(disks[0]))
 		}
-		lines = append(lines, formatDiskSMARTLine(disks))
+		if smartLine := formatDiskSMARTLine(disks); smartLine != "" {
+			lines = append(lines, smartLine)
+		}
 	}
 	lines = append(lines, formatDiskIOLine(io))
 	return cardData{icon: iconDisk, title: "Disk", lines: lines}
@@ -408,56 +414,39 @@ func formatDiskMetaLine(d DiskStatus) string {
 	return fmt.Sprintf("Total  %s", strings.Join(parts, " · "))
 }
 
+// formatDiskSMARTLine returns "" unless a disk is actually failing.
+//
+// SMART has one actionable state. "Verified" asks nothing of the user, and
+// external enclosures usually do not pass SMART through at all, so a Mac with
+// two USB disks rendered "SMART  INTR OK · EXTR1 N/A · EXTR2 N/A": a row whose
+// length grew with disk count, carrying no information, and the only row in the
+// card wide enough to break the alignment of the ones above it. A failing disk
+// still gets a full-width red line, and the health score already counts SMART
+// failures either way.
 func formatDiskSMARTLine(disks []DiskStatus) string {
-	if len(disks) == 1 {
-		status, failing := formatSMARTStatus(disks[0].SmartStatus, false)
-		if failing {
-			status += " · " + dangerStyle.Render("Back up now")
-		}
-		return fmt.Sprintf("%-*s %s", metricLabelWidth, "SMART", status)
-	}
-
+	failingLabels := make([]string, 0, len(disks))
 	internal, external := splitDisks(disks)
-	parts := make([]string, 0, len(disks)+1)
-	hasFailing := false
-	addGroup := func(prefix string, list []DiskStatus) {
+	collectFailing := func(prefix string, list []DiskStatus) {
 		for index, disk := range list {
-			status, failing := formatSMARTStatus(disk.SmartStatus, true)
-			parts = append(parts, diskLabel(prefix, index, len(list))+" "+status)
-			hasFailing = hasFailing || failing
+			if disk.SmartStatus != smartStatusFailing {
+				continue
+			}
+			if len(disks) == 1 {
+				failingLabels = append(failingLabels, dangerStyle.Render("Failing"))
+				continue
+			}
+			failingLabels = append(failingLabels,
+				diskLabel(prefix, index, len(list))+" "+dangerStyle.Render("FAIL"))
 		}
 	}
-	addGroup("INTR", internal)
-	addGroup("EXTR", external)
-	if hasFailing {
-		parts = append([]string{dangerStyle.Render("Back up now")}, parts...)
+	collectFailing("INTR", internal)
+	collectFailing("EXTR", external)
+	if len(failingLabels) == 0 {
+		return ""
 	}
-	return fmt.Sprintf("%-*s %s", metricLabelWidth, "SMART", strings.Join(parts, " · "))
-}
 
-func formatSMARTStatus(status string, compact bool) (string, bool) {
-	switch status {
-	case smartStatusVerified:
-		if compact {
-			return okStyle.Render("OK"), false
-		}
-		return okStyle.Render("Verified"), false
-	case smartStatusFailing:
-		if compact {
-			return dangerStyle.Render("FAIL"), true
-		}
-		return dangerStyle.Render("Failing"), true
-	case smartStatusUnsupported:
-		if compact {
-			return subtleStyle.Render("N/A"), false
-		}
-		return subtleStyle.Render("Unsupported"), false
-	default:
-		if compact {
-			return subtleStyle.Render("?"), false
-		}
-		return subtleStyle.Render("Unknown"), false
-	}
+	failingLabels = append(failingLabels, dangerStyle.Render("Back up now"))
+	return fmt.Sprintf("%-*s %s", metricLabelWidth, "SMART", strings.Join(failingLabels, " · "))
 }
 
 func formatDiskIOLine(io DiskIOStatus) string {
@@ -528,12 +517,15 @@ func processMemoryText(p ProcessInfo) string {
 	return ""
 }
 
-func buildCards(m MetricsSnapshot, width int, cpuCores int) []cardData {
+// buildCards renders every card. batteryProbed says whether a full collection
+// has completed at least once; until it has, an empty battery list means "not
+// measured yet", not "this Mac has no battery".
+func buildCards(m MetricsSnapshot, width int, cpuCores int, batteryProbed bool) []cardData {
 	cards := []cardData{
 		renderCPUCard(m.CPU, m.Thermal, cpuCores),
 		renderMemoryCard(m.Memory, width),
 		renderDiskCard(m.Disks, m.DiskIO, m.TrashSize, m.TrashApprox),
-		renderBatteryCard(m.Batteries, m.Thermal),
+		renderBatteryCard(m.Batteries, m.Thermal, batteryProbed),
 		renderProcessCard(m.TopProcesses, width),
 		renderNetworkCard(m.Network, m.NetworkHistory, m.Proxy, width),
 	}
@@ -642,9 +634,20 @@ func sparkline(history []float64, current float64, width int) string {
 	return okStyle.Render(result)
 }
 
-func renderBatteryCard(batts []BatteryStatus, thermal ThermalStatus) cardData {
+func renderBatteryCard(batts []BatteryStatus, thermal ThermalStatus, probed bool) cardData {
 	var lines []string
-	if len(batts) == 0 {
+	if len(batts) == 0 && !probed {
+		// The first collection is the fast one, and it does not read batteries.
+		// Saying "No battery" here told every laptop it had none for the couple
+		// of seconds before the first full collection landed. Hold the card's
+		// shape with placeholders instead, so the real values replace them
+		// without the layout jumping.
+		lines = append(lines,
+			fmt.Sprintf("Level  %s  %6s", batteryProgressBar(0), placeholderValue),
+			fmt.Sprintf("Health %s  %6s", batteryProgressBar(0), placeholderValue),
+			subtleStyle.Render(placeholderValue),
+		)
+	} else if len(batts) == 0 {
 		lines = append(lines, subtleStyle.Render("No battery"))
 	} else {
 		b := batts[0]

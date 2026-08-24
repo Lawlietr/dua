@@ -65,7 +65,7 @@ func (m model) View() string {
 			progressPrefix = fmt.Sprintf(" %s%.0f%%%s", colorCyan, percent, colorReset)
 		}
 
-		fmt.Fprintf(&b, "%s%s%s%s Scanning%s: %s%s files%s, %s%s dirs%s, %s%s%s\n",
+		statusLine := fmt.Sprintf("%s%s%s%s Scanning%s: %s%s files%s, %s%s dirs%s, %s%s%s",
 			colorCyan, colorBold,
 			spinnerFrames[m.spinner],
 			colorReset,
@@ -74,12 +74,29 @@ func (m model) View() string {
 			colorYellow, formatNumber(dirsScanned), colorReset,
 			colorGreen, humanizeBytes(bytesScanned), colorReset)
 
+		currentPath := ""
 		if m.currentPath != nil {
-			currentPath, _ := m.currentPath.Load().(string)
-			if currentPath != "" {
-				shortPath := displayPath(currentPath)
-				shortPath = truncateMiddle(shortPath, 50)
-				fmt.Fprintf(&b, "%s%s%s\n", colorGray, shortPath, colorReset)
+			currentPath, _ = m.currentPath.Load().(string)
+		}
+
+		if currentPath == "" {
+			fmt.Fprintf(&b, "%s\n", statusLine)
+		} else {
+			// Keep the path on the status line whenever the terminal is wide
+			// enough to show a useful piece of it, instead of always spending a
+			// second row on it. The old code also truncated to a fixed 50
+			// columns, which cut paths short on wide terminals and could still
+			// overflow narrow ones.
+			shortPath := displayPath(currentPath)
+			const pathSeparator = "  "
+			remaining := m.width - displayWidth(statusLine) - len(pathSeparator)
+			if remaining >= scanPathInlineMinWidth {
+				fmt.Fprintf(&b, "%s%s%s%s%s\n", statusLine, pathSeparator,
+					colorGray, truncateMiddle(shortPath, remaining), colorReset)
+			} else {
+				pathWidth := max(m.width, scanPathInlineMinWidth)
+				fmt.Fprintf(&b, "%s\n%s%s%s\n", statusLine,
+					colorGray, truncateMiddle(shortPath, pathWidth), colorReset)
 			}
 		}
 

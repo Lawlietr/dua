@@ -564,7 +564,7 @@ func TestRenderBatteryCardShowsAdapterInputOnly(t *testing.T) {
 	}}, ThermalStatus{
 		BatteryTemp:  30.7,
 		AdapterPower: 94,
-	})
+	}, true)
 
 	var joined []string
 	for _, line := range card.lines {
@@ -773,8 +773,8 @@ func TestRenderDiskCardAddsMetaLineForSingleDisk(t *testing.T) {
 		Fstype:      "apfs",
 	}}, DiskIOStatus{ReadRate: 0, WriteRate: 0.1}, 0, false)
 
-	if len(card.lines) != 4 {
-		t.Fatalf("renderDiskCard() single disk expected 4 lines, got %d", len(card.lines))
+	if len(card.lines) != 3 {
+		t.Fatalf("renderDiskCard() single disk expected 3 lines, got %d", len(card.lines))
 	}
 
 	meta := stripANSI(card.lines[1])
@@ -804,8 +804,8 @@ func TestRenderDiskCardDoesNotAddMetaLineForMultipleDisks(t *testing.T) {
 		{UsedPercent: 50.0, Used: 500 << 30, Total: 1000 << 30, Fstype: "apfs"},
 	}, DiskIOStatus{}, 0, false)
 
-	if len(card.lines) != 4 {
-		t.Fatalf("renderDiskCard() multiple disks expected 4 lines, got %d", len(card.lines))
+	if len(card.lines) != 3 {
+		t.Fatalf("renderDiskCard() multiple disks expected 3 lines, got %d", len(card.lines))
 	}
 
 	for _, line := range card.lines {
@@ -857,31 +857,45 @@ func TestRenderDiskCardUsesGraphicIOLine(t *testing.T) {
 		{UsedPercent: 95.0, Used: 16 << 30, Total: 16<<30 + 444<<20, External: true},
 	}, DiskIOStatus{ReadRate: 0, WriteRate: 24.6}, 101<<20, false)
 
-	if len(card.lines) != 5 {
-		t.Fatalf("renderDiskCard() expected 5 lines without trash, got %d", len(card.lines))
+	if len(card.lines) != 4 {
+		t.Fatalf("renderDiskCard() expected 4 lines without trash, got %d", len(card.lines))
 	}
-	if got := stripANSI(card.lines[4]); got != "I/O    ▯▯▯▯▯ R 0 · ▮▮▯▯▯ W 25 MB/s" {
+	if got := stripANSI(card.lines[3]); got != "I/O    ▯▯▯▯▯ R 0 · ▮▮▯▯▯ W 25 MB/s" {
 		t.Fatalf("I/O line = %q", got)
 	}
 }
 
-func TestRenderDiskCardFormatsSingleAndMultipleSMARTSummaries(t *testing.T) {
-	single := renderDiskCard([]DiskStatus{{
-		UsedPercent: 30,
-		Used:        30 << 30,
-		Total:       100 << 30,
-		SmartStatus: smartStatusVerified,
-	}}, DiskIOStatus{}, 0, false)
-	if got := stripANSI(single.lines[2]); got != "SMART  Verified" {
-		t.Fatalf("single SMART line = %q", got)
-	}
-
-	multiple := renderDiskCard([]DiskStatus{
+// SMART earns a row only when a disk is failing. "Verified" needs no action,
+// and USB enclosures rarely pass SMART through, so healthy machines used to
+// carry a row that said nothing and grew with every disk attached.
+func TestRenderDiskCardShowsSMARTOnlyWhenFailing(t *testing.T) {
+	healthy := renderDiskCard([]DiskStatus{
 		{UsedPercent: 30, Used: 30 << 30, Total: 100 << 30, SmartStatus: smartStatusVerified},
 		{UsedPercent: 20, Used: 20 << 30, Total: 100 << 30, External: true, SmartStatus: smartStatusUnsupported},
 	}, DiskIOStatus{}, 0, false)
-	if got := stripANSI(multiple.lines[2]); got != "SMART  INTR OK · EXTR N/A" {
-		t.Fatalf("multiple SMART line = %q", got)
+	for _, line := range healthy.lines {
+		if strings.Contains(stripANSI(line), "SMART") {
+			t.Fatalf("healthy disks should not render a SMART row, got %q", stripANSI(line))
+		}
+	}
+
+	failing := renderDiskCard([]DiskStatus{{
+		UsedPercent: 30,
+		Used:        30 << 30,
+		Total:       100 << 30,
+		SmartStatus: smartStatusFailing,
+	}}, DiskIOStatus{}, 0, false)
+	var smartLine string
+	for _, line := range failing.lines {
+		if strings.Contains(stripANSI(line), "SMART") {
+			smartLine = stripANSI(line)
+		}
+	}
+	if smartLine == "" {
+		t.Fatal("a failing disk must still render a SMART row")
+	}
+	if !strings.Contains(smartLine, "Failing") || !strings.Contains(smartLine, "Back up now") {
+		t.Fatalf("failing SMART row must name the state and the action, got %q", smartLine)
 	}
 }
 
@@ -1502,7 +1516,7 @@ func TestRenderTwoColumnsAlignsRowTitles(t *testing.T) {
 
 func TestRenderTwoColumnsNeverGrowsFixedPairLayout(t *testing.T) {
 	const width = 120
-	cards := buildCards(MetricsSnapshot{}, width/2-4, 2)
+	cards := buildCards(MetricsSnapshot{}, width/2-4, 2, true)
 	cw := width/2 - 2
 
 	var fixedRows []string
