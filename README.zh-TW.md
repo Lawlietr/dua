@@ -22,6 +22,20 @@ curl -fsSL "https://raw.githubusercontent.com/Lawlietr/dua/main/scripts/install.
 
 將 `~/.local/bin` 加入 `PATH`（通常加進 `~/.bashrc` 或 `~/.zshrc`）即可永久使用。
 
+#### macOS（Apple Silicon）
+
+Linux 是主要平台。macOS arm64 版本自 v0.2.0 起以次要支援的形式發布：
+
+```bash
+mkdir -p ~/.local/bin
+curl -fsSL "https://github.com/Lawlietr/dua/releases/latest/download/dua-darwin-arm64.tar.gz" | tar -xz -C ~/.local/bin
+```
+
+注意：
+- 僅支援 Apple Silicon；不提供 Intel Mac 版本。
+- 使用 darwin tarball 內附的 router 時，macOS 上 `dua update` 可正常運作。
+- insight 路徑以 XDG 快取為主，macOS 上的洞察清單會比 Linux 稀疏。
+
 ### 從原始碼建置
 
 需要 Go 1.25+：

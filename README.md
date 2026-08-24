@@ -22,6 +22,20 @@ curl -fsSL "https://raw.githubusercontent.com/Lawlietr/dua/main/scripts/install.
 
 Add `~/.local/bin` to your `PATH` (usually in `~/.bashrc` or `~/.zshrc`) to make it permanent.
 
+#### macOS (Apple Silicon)
+
+Linux is the primary platform. A macOS arm64 build is also published as secondary support (since v0.2.0):
+
+```bash
+mkdir -p ~/.local/bin
+curl -fsSL "https://github.com/Lawlietr/dua/releases/latest/download/dua-darwin-arm64.tar.gz" | tar -xz -C ~/.local/bin
+```
+
+Notes:
+- Requires Apple Silicon; Intel Macs are not built.
+- `dua update` works on macOS when using the router shipped in the darwin tarball.
+- Insight paths target XDG caches, so the insights list is sparser on macOS than on Linux.
+
 ### Build from source
 
 Requires Go 1.25+:
