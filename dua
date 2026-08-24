@@ -68,14 +68,16 @@ version_cmp() {
     [ "$smallest" = "$a" ] && return 0 || return 2
 }
 
-# Detect the tarball name for the current architecture.
-arch_tarball() {
-    local arch
+# Detect the tarball name for the current platform (OS + architecture).
+platform_tarball() {
+    local os arch
+    os="$(uname -s)"
     arch="$(uname -m)"
-    case "$arch" in
-        x86_64)  printf 'dua-linux-amd64' ;;
-        aarch64|arm64) printf 'dua-linux-arm64' ;;
-        *) echo "dua: unsupported architecture: $arch" >&2; return 1 ;;
+    case "$os:$arch" in
+        Linux:x86_64)              printf 'dua-linux-amd64' ;;
+        Linux:aarch64|Linux:arm64) printf 'dua-linux-arm64' ;;
+        Darwin:arm64)              printf 'dua-darwin-arm64' ;;
+        *) echo "dua: unsupported platform: $os/$arch" >&2; return 1 ;;
     esac
 }
 
@@ -123,7 +125,7 @@ do_update() {
             ;;
     esac
 
-    tarball_name="$(arch_tarball)"
+    tarball_name="$(platform_tarball)"
     ver_url="https://github.com/Lawlietr/dua/releases/download/${latest_tag}/${tarball_name}.tar.gz"
     sha_url="${ver_url}.sha256"
 
