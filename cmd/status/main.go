@@ -25,8 +25,8 @@ var (
 	procCPUThreshold = flag.Float64("proc-cpu-threshold", 100, "alert when a process stays above this CPU percent")
 	procCPUWindow    = flag.Duration("proc-cpu-window", 5*time.Minute, "continuous duration a process must exceed the CPU threshold")
 	procCPUAlerts    = flag.Bool("proc-cpu-alerts", true, "enable persistent high-CPU process alerts")
-	version           = "dev"
-	commit            = "none"
+	version          = "dev"
+	commit           = "none"
 
 	// Watch mode: stream NDJSON (one snapshot per line) from a single warm collector.
 	watchMode     = flag.Bool("watch", false, "stream metrics continuously as newline-delimited JSON instead of the one-shot TUI/JSON")

@@ -16,7 +16,7 @@ import (
 )
 
 var (
-	jsonMode = flag.Bool("json", false, "output analysis as JSON instead of TUI") 
+	jsonMode = flag.Bool("json", false, "output analysis as JSON instead of TUI")
 	version  = "dev"
 	commit   = "none"
 )
