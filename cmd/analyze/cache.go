@@ -642,10 +642,14 @@ func loadStaleCacheFromDisk(path string) (*cacheEntry, error) {
 }
 
 func saveCacheToDisk(path string, result scanResult) error {
-	return saveCacheToDiskWithOptions(path, result, false)
+	ctx := context.Background()
+	return saveCacheToDiskWithOptions(newScanPublication(ctx, nil), path, result, false)
 }
 
-func saveCacheToDiskWithOptions(path string, result scanResult, needsRefresh bool) error {
+func saveCacheToDiskWithOptions(publication *scanPublication, path string, result scanResult, needsRefresh bool) error {
+	if err := publication.ctx.Err(); err != nil {
+		return err
+	}
 	cachePath, err := getCachePath(path)
 	if err != nil {
 		return err
@@ -689,11 +693,21 @@ func saveCacheToDiskWithOptions(path string, result scanResult, needsRefresh boo
 		_ = os.Remove(tmpPath)
 		return err
 	}
-	if err := os.Rename(tmpPath, cachePath); err != nil {
+	err = publication.commit(func() error {
+		return os.Rename(tmpPath, cachePath)
+	})
+	if err != nil {
 		_ = os.Remove(tmpPath)
 		return err
 	}
 	return nil
+}
+
+func removeCacheEntryForScan(publication *scanPublication, path string) error {
+	return publication.commit(func() error {
+		removeCacheEntry(path)
+		return nil
+	})
 }
 
 // peekCacheTotalFiles reads the total file count from cache, ignoring

@@ -235,16 +235,6 @@ func (m *model) finishLiveScan(result scanResult) {
 	m.status = fmt.Sprintf("Scanned %s", humanizeBytes(m.totalSize))
 }
 
-func (m *model) finishCanceledLiveScan() {
-	m.scanning = false
-	m.liveScanID = 0
-	m.liveScanCancel = nil
-	m.liveScanEvents = nil
-	m.liveScanningPaths = nil
-	m.autoSortLiveEntries = false
-	m.status = "Scan cancelled"
-}
-
 func (m *model) sortLiveEntriesForActiveMode() {
 	m.ensureLiveEntryBacking()
 	selectedPath := ""
@@ -403,9 +393,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case liveScanFailed:
 			m.status = fmt.Sprintf("Scan failed: %v", msg.err)
 			return m, waitLiveScanEventCmd(m.liveScanEvents)
-		case liveScanCanceled:
-			m.finishCanceledLiveScan()
-			return m, nil
 		default:
 			return m, waitLiveScanEventCmd(m.liveScanEvents)
 		}
