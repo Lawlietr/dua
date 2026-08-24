@@ -8,7 +8,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL_v3-blue.svg?style=flat-square" alt="License"></a>
 </p>
 
-dua is a terminal-first Linux inspection toolkit with two read-only commands, forked from the macOS Mole CLI's `analyze` and `status` and re-scoped as an independent project. It shows where disk space went and how healthy the machine is — from a CLI, script, or compact TUI. It **never deletes or modifies user data**: there is no cleanup surface anywhere in the codebase.
+dua is a terminal-first Linux inspection toolkit with two read-only commands, forked from the macOS Mole CLI's `analyze` and `status` and re-scoped as an independent project. Linux is the primary platform; macOS arm64 is supported on a secondary, best-effort basis. It shows where disk space went and how healthy the machine is — from a CLI, script, or compact TUI. It **never deletes or modifies user data**: there is no cleanup surface anywhere in the codebase.
 
 ## Installation
 
@@ -34,6 +34,7 @@ curl -fsSL "https://github.com/Lawlietr/dua/releases/latest/download/dua-darwin-
 Notes:
 - Requires Apple Silicon; Intel Macs are not built.
 - `dua update` works on macOS when using the router shipped in the darwin tarball.
+- Opening files and folders (O / P / F keys) uses the macOS `open` command.
 - Insight paths target XDG caches, so the insights list is sparser on macOS than on Linux.
 
 ### Build from source

@@ -47,11 +47,11 @@ If the answer is no or unclear, decline the feature, narrow it, or park it until
 - `bin/` - build output directory (gitignored); `dua-analyze` and `dua-status` live here after `make build`.
 - `Makefile` - Linux-only build/test entrypoints. `CGO_ENABLED=0`, `-trimpath`, `-s -w`.
 - `go.mod` - pins `toolchain go1.25.10`. Both workflows read `go-version-file: go.mod`, so a toolchain bump here updates CI and release builds together.
-- `.github/workflows/` - CI and release pipelines. `test.yml` runs vet + tests on Linux-DEV/main pushes and pull requests. `release.yml` is tag-driven (see Versioning).
+- `.github/workflows/` - CI and release pipelines. `test.yml` runs vet + tests on Linux-DEV/main pushes and pull requests. `release.yml` is tag-driven (see Versioning). `upload-darwin.yml` is a one-off dispatch pipeline that cross-compiles darwin/arm64, smoke-tests it on a macos-14 runner, and attaches the tarball to an existing release; it exists until a regular release folds darwin into the main matrix (see Next Steps) and should be deleted afterwards.
 - `.github/dependabot.yml` - weekly dependency-update PRs for `gomod` + `github-actions`; minor/patch updates are grouped to reduce noise.
 - `README.md` (English) and `README.zh-TW.md` (Traditional Chinese) are the user-facing docs; keep them in sync when behaviour or install instructions change — the two are translations of the same document, so headings and section order must match.
 
-Platform-specific files in `cmd/analyze/` carry explicit build tags (`atime_linux.go`, `atime_darwin.go`). The darwin files are preserved so the binaries still cross-compile, but Linux is the supported runtime.
+Platform-specific files in `cmd/analyze/` carry explicit build tags (`atime_linux.go`, `atime_darwin.go`). Linux is the primary supported runtime; macOS arm64 ships as secondary, best-effort support (tarballs attached to releases since v0.2.0). The darwin build paths (`atime_darwin.go`, Spotlight, `open`) are real code paths exercised by CI smoke tests, not dead weight.
 
 ## Commands
 
@@ -76,7 +76,7 @@ Public docs and examples should prefer the installed `dua` command. Use `./dua` 
 - **dua is read-only.** Before adding any code path that deletes, truncates, moves, or modifies files, stop and reconsider: the deletion surface was deliberately removed during the Linux port.
 - Keep analyze scan behavior conservative and bounded: every scan has a timeout budget and inner-loop checkpoints; a timed-out producer must not feed partial output into downstream consumers.
 - `du` is invoked with `-skPx` plus exclude patterns. The exclude flag is platform-aware (`duExcludeArgs`): GNU du (Linux) uses `--exclude=NAME`, BSD du (macOS) uses `-I NAME`. Verify against the target platform's `du` before changing flags.
-- `xdg-open` is the default file opener (O / P / F keys). Validate paths (`validatePath`) before passing them to any external command.
+- The file opener (O / P / F keys) is platform-aware (`openCommandName`): `open` on macOS, `xdg-open` elsewhere. Validate paths (`validatePath`) before passing them to any external command.
 - Spotlight (`mdfind`) integration is macOS-only and guarded by `runtime.GOOS == "darwin"`. The walk-based collector is the Linux large-file source.
 - Overview roots and insight paths are platform-aware (`systemOverviewRoots`, `createInsightEntries`). Linux uses `/usr`, `/opt`, `/var`, `/home` and XDG cache paths (`~/.cache`, `~/.npm`, `~/.local/share/Trash`, ...).
 - Keep shell code minimal; the `dua` router is the only shell surface. Format with `./scripts/check.sh --format` only if scripts exist; there is none today.
@@ -92,7 +92,7 @@ Public docs and examples should prefer the installed `dua` command. Use `./dua` 
 
 ## Versioning
 
-- Releases are tag-driven: pushing a `v*` tag triggers `.github/workflows/release.yml`, which builds `dua-analyze`/`dua-status` for linux/amd64 and linux/arm64, packages flat tarballs (`dua`, `dua-analyze`, `dua-status`) with sha256 checksums, and creates a GitHub Release. `releases/latest` serves the newest tag.
+- Releases are tag-driven: pushing a `v*` tag triggers `.github/workflows/release.yml`, which builds `dua-analyze`/`dua-status` for linux/amd64 and linux/arm64, packages flat tarballs (`dua`, `dua-analyze`, `dua-status`) with sha256 checksums, and creates a GitHub Release. `releases/latest` serves the newest tag. Since v0.2.0, releases also carry a `dua-darwin-arm64.tar.gz` attached by the one-off `upload-darwin.yml` pipeline; this is transitional until darwin joins the regular matrix.
 - Commits to `main`/`Linux-DEV` do NOT rebuild the distributed binaries: `releases/latest` only changes when a `v*` tag is pushed. A security fix must ship as a patch release (e.g. `v0.1.2`) so users downloading via curl get the fixed binaries.
 - Version numbers: bump the patch (`v0.x.y`) for fixes, docs, and project-level chores; bump the minor (`v0.y.0`) only for new features or behavior changes; reserve `v1.0.0` for a stability promise. Do not bump the minor for chores.
 
@@ -117,3 +117,4 @@ A single-binary design (one `dua` executable with subcommands) would be cleaner 
 - [x] Include version in `dua status` and `dua analyze` main output (TUI).
 - [x] Include version in `dua status` and `dua analyze` JSON output.
 - [x] Add `dua update` command to check GitHub and update in-place.
+- [ ] Fold darwin/arm64 into `release.yml`'s build matrix (with macos smoke gate) and delete `upload-darwin.yml`.

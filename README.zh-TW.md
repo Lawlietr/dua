@@ -1,6 +1,6 @@
 <div align="center">
   <h1>dua</h1>
-  <p><em>Linux 磁碟分析與系統狀態，從終端機開始。</em></p>
+  <p><em>Linux 磁碟分析與系統狀態（macOS arm64 為次要支援），從終端機開始。</em></p>
   <p><a href="README.md">English</a> | 繁體中文</p>
 </div>
 
@@ -8,7 +8,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL_v3-blue.svg?style=flat-square" alt="License"></a>
 </p>
 
-dua 是一套終端機優先的 Linux 檢視工具，提供兩個唯讀命令，源自 macOS Mole CLI 的 `analyze` 與 `status`，並重新定位為獨立專案。它能從 CLI、腳本或精簡 TUI 查看磁碟空間用到哪去了、系統健康度如何。dua **絕不會刪除或修改使用者資料**：整個程式碼庫不存在任何清理（cleanup）功能。
+dua 是一套終端機優先的 Linux 檢視工具，提供兩個唯讀命令，源自 macOS Mole CLI 的 `analyze` 與 `status`，並重新定位為獨立專案。Linux 是主要平台；macOS arm64 以次要、盡力支援的方式提供。它能從 CLI、腳本或精簡 TUI 查看磁碟空間用到哪去了、系統健康度如何。dua **絕不會刪除或修改使用者資料**：整個程式碼庫不存在任何清理（cleanup）功能。
 
 ## 安裝
 
@@ -34,6 +34,7 @@ curl -fsSL "https://github.com/Lawlietr/dua/releases/latest/download/dua-darwin-
 注意：
 - 僅支援 Apple Silicon；不提供 Intel Mac 版本。
 - 使用 darwin tarball 內附的 router 時，macOS 上 `dua update` 可正常運作。
+- 開啟檔案／資料夾（O / P / F 鍵）在 macOS 上使用 `open` 指令。
 - insight 路徑以 XDG 快取為主，macOS 上的洞察清單會比 Linux 稀疏。
 
 ### 從原始碼建置
