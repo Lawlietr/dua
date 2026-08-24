@@ -43,6 +43,7 @@ func createInsightEntries() []dirEntry {
 		{"System Logs", filepath.Join(home, ".local", "share", "logs")},
 		{"Trash", filepath.Join(home, ".local", "share", "Trash")},
 		{"pip Cache", filepath.Join(home, ".cache", "pip")},
+		{"uv Cache", filepath.Join(home, ".cache", "uv")},
 		{"Go Build Cache", filepath.Join(home, ".cache", "go-build")},
 		{"JetBrains Cache", filepath.Join(home, ".cache", "JetBrains")},
 		{"Gradle Cache", filepath.Join(home, ".gradle", "caches")},
