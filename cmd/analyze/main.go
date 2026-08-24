@@ -206,6 +206,15 @@ func hasPendingOverviewEntries(entries []dirEntry) bool {
 	return false
 }
 
+// openCommandName returns the platform file-opener: `open` on macOS,
+// `xdg-open` everywhere else.
+func openCommandName() string {
+	if runtime.GOOS == "darwin" {
+		return "open"
+	}
+	return "xdg-open"
+}
+
 func safeOpen(path string, reveal bool) error {
 	if err := validatePath(path); err != nil {
 		return err
@@ -213,9 +222,9 @@ func safeOpen(path string, reveal bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), openCommandTimeout)
 	defer cancel()
 	if reveal {
-		return exec.CommandContext(ctx, "xdg-open", filepath.Dir(path)).Run()
+		return exec.CommandContext(ctx, openCommandName(), filepath.Dir(path)).Run()
 	}
-	return exec.CommandContext(ctx, "xdg-open", path).Run()
+	return exec.CommandContext(ctx, openCommandName(), path).Run()
 }
 
 // safePreview opens the file with the default desktop application.
@@ -225,5 +234,5 @@ func safePreview(path string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), openCommandTimeout)
 	defer cancel()
-	return exec.CommandContext(ctx, "xdg-open", path).Run()
+	return exec.CommandContext(ctx, openCommandName(), path).Run()
 }

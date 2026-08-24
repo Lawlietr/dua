@@ -3351,3 +3351,13 @@ func mustAbs(t *testing.T, path string) string {
 	}
 	return abs
 }
+
+func TestOpenCommandNamePerPlatform(t *testing.T) {
+	want := "xdg-open"
+	if runtime.GOOS == "darwin" {
+		want = "open"
+	}
+	if got := openCommandName(); got != want {
+		t.Fatalf("openCommandName() on %s = %q, want %q", runtime.GOOS, got, want)
+	}
+}
