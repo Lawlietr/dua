@@ -105,3 +105,18 @@ jobs:
             dist/dua-darwin-arm64.tar.gz \
             dist/dua-darwin-arm64.tar.gz.sha256 \
             --repo Lawlietr/dua
+      - name: Append macOS section to release notes (idempotent)
+        run: |
+          gh api repos/Lawlietr/dua/releases/tags/v0.2.0 --jq .body > body.md
+          if ! grep -qF 'macOS (Apple Silicon)' body.md; then
+            printf '%s\n' '' \
+              '### macOS (Apple Silicon) - experimental' \
+              '' \
+              'This release also ships `dua-darwin-arm64.tar.gz` as secondary support: cross-compiled by CI and smoke-tested on an Apple Silicon runner.' \
+              '' \
+              '- Install: `mkdir -p ~/.local/bin && curl -fsSL "https://github.com/Lawlietr/dua/releases/latest/download/dua-darwin-arm64.tar.gz" | tar -xz -C ~/.local/bin`' \
+              '- Built from the v0.2.0 sources plus one small router fix (platform-aware tarball resolution), so the COMMIT embedded in the darwin binaries differs from the Linux assets.' \
+              '- Apple Silicon only; Intel Mac builds are not provided.' \
+              >> body.md
+          fi
+          gh release edit v0.2.0 --notes-file body.md --repo Lawlietr/dua
