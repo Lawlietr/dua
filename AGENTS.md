@@ -112,6 +112,135 @@ dua currently ships as **three files**: a bash router (`dua`) plus two Go binari
 
 A single-binary design (one `dua` executable with subcommands) would be cleaner from a user's perspective, but would require merging `cmd/analyze` and `cmd/status` into a single `main.go` with subcommand handling (e.g. via `flag` or a CLI library). This is not currently planned but worth keeping in mind if the project grows.
 
+## Fork Maintenance
+
+### Upstream Repository
+
+- **Upstream**: `https://github.com/tw93/Mole`
+- **Upstream remote**: `upstream` (configured as `https://github.com/tw93/Mole.git`)
+- **Origin remote**: `origin` (configured as `git@github.com:Lawlietr/dua.git`)
+
+```bash
+# Add upstream remote (if not already configured)
+git remote add upstream https://github.com/tw93/Mole.git
+
+# Fetch latest from upstream
+git fetch upstream
+
+# Check what's new upstream (analyze/status only)
+git log --oneline upstream/main -- cmd/analyze/ cmd/status/
+
+# Check merge base (split point)
+git merge-base HEAD upstream/main
+```
+
+### Fork Strategy: Cherry-pick, Not Merge
+
+two is an **independent fork**, not a tracked fork. Mole continues to develop macOS-specific features (cleanup, uninstall, optimize, purge, trash routes, battery health, etc.) that dua deliberately does not need. Direct merge of `upstream/main` will produce **~70+ conflicts** including:
+
+- **~60 modify/delete conflicts**: Mole added/modified files that dua deleted (cleanup scripts, uninstall scripts, tests, Mole-specific shell scripts)
+- **~13 content conflicts**: Both repos modified the same files differently
+
+**Do NOT** do `git merge upstream/main`. Use cherry-pick instead.
+
+### Cherry-pick Workflow
+
+```bash
+# 1. Fetch upstream
+git fetch upstream
+
+# 2. List upstream commits affecting analyze/status
+git log --oneline upstream/main -- cmd/analyze/ cmd/status/
+
+# 3. Filter out Mole-specific commits (cleanup, uninstall, trash, delete, battery, etc.)
+#    Keep only: bug fixes, performance improvements, UI fixes, Linux-relevant changes
+
+# 4. Cherry-pick selected commits
+git cherry-pick <commit-hash>
+
+# 5. Run tests after each cherry-pick
+go test ./cmd/analyze ./cmd/status
+
+# 6. Commit or amend as appropriate
+```
+
+### Commit Classification Guide
+
+| Category | Examples | Action |
+|----------|---------|--------|
+| **Mole-specific** | `clean`, `uninstall`, `purge`, `optimize`, `trash`, `delete`, `mo `, `mole ` | **SKIP** |
+| **macOS-only** | `battery`, `ioreg`, `Apple Silicon`, `Spotlight`, `Parallels VM` | **SKIP** (Linux doesn't need these) |
+| **Platform-specific shell** | `clean.sh`, `uninstall.sh`, `mole` script | **SKIP** |
+| **Bug fixes (generic)** | `cancel scan`, `process owner`, `stale data`, `snapshot count` | **REVIEW** |
+| **Performance** | `scan cancellation`, `cache optimization` | **REVIEW** |
+| **UI/UX** | `spinner`, `layout`, `UTF-8 safe`, `terminal fit` | **REVIEW** |
+| **Tests** | test improvements, race fixes | **REVIEW** |
+
+### Upstream Commits Since Fork (Analysis)
+
+As of the latest check, upstream has **32 commits** affecting `cmd/analyze/` and `cmd/status/` since the fork point:
+
+| Category | Count | Action |
+|----------|-------|--------|
+| Already ported by dua | ~5 | N/A |
+| Mole-specific (cleanup/uninstall/etc.) | ~15 | **SKIP** |
+| macOS-specific (battery/ioreg/Spotlight) | ~8 | **SKIP** |
+| Potentially useful for review | ~4 | **REVIEW** |
+
+#### Potentially Useful Commits (Review Needed)
+
+**Status process metrics improvements:**
+- `b3dc7f31` fix(status): mark stale process data in the TUI
+- `a0fd0dc1` fix(status): retain stale process samples
+- `c034c3fc` fix(status): preserve multiword process owner names
+- `0b1e34d5` fix(status): expose process sample freshness
+- `f92133a4` fix(status): surface zombie processes and parent owners
+- `0be91406` fix(status): read the core topology by level order
+- `455e6627` fix(status): stop reporting an active tunnel interface as a proxy
+
+**Analyze snapshot improvements:**
+- `a300f00c` fix(analyze): reject stale snapshot probes
+- `76214aac` fix(analyze): refresh local snapshot count
+- `608d5d04` fix(analyze): surface local snapshot space
+
+**UI/UX improvements:**
+- `785b84c4` fix(ui): keep braille spinner frames UTF-8 safe
+- `2057e1ea` fix(analyze): measure the whole bar in eighths of a cell
+- `6e4c7455` fix(analyze): quiet the sub-cell bars and fit the scan path
+- `1e0d23c9` feat(status): balance two-column layout without growing dashboard
+
+**Performance:**
+- Scan cancellation improvements (大部分已由 dua port 過)
+
+### Cherry-pick Decision Log
+
+| Date | Category | Commits | Decision | Reason |
+|------|----------|---------|----------|--------|
+| 2025-08-28 | A: Status process metrics | `b3dc7f31`, `a0fd0dc1`, `c034c3fc`, `0b1e34d5`, `f92133a4`, `0be91406`, `455e6627` | **SKIP** | Requires `ZombieParent`, `summarizeZombies`, `processSample`, `parseProcessOutputStrict` and other types/functions not in HEAD. Not self-contained. |
+| 2025-08-28 | B: Analyze snapshot | `a300f00c`, `76214aac`, `608d5d04` | **SKIP** | Depends on snapshot infrastructure changes in upstream not present in HEAD. |
+| 2025-08-28 | C: UI/UX | `785b84c4`, `2057e1ea`, `6e4c7455`, `1e0d23c9` | **REVIEW LATER** | Low priority, needs TUI compatibility check. |
+
+**Current policy**: Skip A/B category commits. They require significant porting effort (multiple new types, functions, and struct changes) and are not critical for dua's Linux target users. Re-evaluate if upstream refactors into smaller, self-contained patches.
+
+### Decision Checklist for Cherry-picking
+
+Before cherry-picking any upstream commit, answer:
+
+1. **Is this a bug fix or performance improvement?** (skip feature additions)
+2. **Is it platform-agnostic or Linux-relevant?** (skip macOS-only features)
+3. **Does it touch only analyze/status code?** (skip shell scripts)
+4. **Is the fix self-contained?** (skip commits that depend on other Mole features)
+5. **Can we run `go test ./cmd/analyze ./cmd/status` after cherry-picking?** (verify it compiles)
+
+If any answer is "no", skip the commit.
+
+### Regular Maintenance
+
+- **Frequency**: Review upstream monthly or after major releases
+- **Command**: `git log --oneline upstream/main -- cmd/analyze/ cmd/status/` to see new commits
+- **Documentation**: Update this section when new commits are cherry-picked
+- **Tags**: Keep track of which upstream commits were cherry-picked in git log
+
 ## Next Steps
 
 - [x] Include version in `dua status` and `dua analyze` main output (TUI).
