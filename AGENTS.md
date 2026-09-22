@@ -106,6 +106,18 @@ These files are intentionally large. Do not start by splitting them. Keep edits 
 - `cmd/analyze/analyze_test.go` and `cmd/status/view_test.go` are test hotspots. Add new cases near related behavior; split later only when touching many adjacent cases. Run `go test ./cmd/...`.
 - `cmd/status/view.go` owns status rendering only; collection and JSON/NDJSON contracts live elsewhere in `cmd/status/`. Keep narrow-terminal layout and automation output independent. Run `go test ./cmd/status`.
 
+## Context-Mode Knowledge Base
+
+The four hotspot files below plus the user docs are pre-indexed into `ctx-index`. Use `ctx_search` to pull precise snippets instead of re-reading these large files:
+
+- `cmd/analyze/scanner.go` — disk traversal, Spotlight (darwin-only), cancellation, concurrency budgets
+- `cmd/analyze/update.go` — Bubble Tea `Update` chain and message handlers
+- `cmd/analyze/cache.go` — cache schema, expiry, load/save, invalidation
+- `cmd/status/view.go` — status rendering only
+- `README.md` / `README.zh-TW.md` — user-facing usage docs (keep the two in sync)
+
+This section is only the pointer; the indexed copy lives in the shared knowledge base. If the base is purged or the repo is cloned to a fresh environment, re-index with `ctx_index` on these paths.
+
 ## Architecture Note
 
 dua currently ships as **three files**: a bash router (`dua`) plus two Go binaries (`dua-analyze`, `dua-status`). The router dispatches to the appropriate binary based on the subcommand. This is intentional and documented in the Repository Map above.
