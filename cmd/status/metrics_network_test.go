@@ -211,6 +211,104 @@ func TestTunnelInterfaceIsNotReportedAsAProxy(t *testing.T) {
 	}
 }
 
+func TestNetworkTotalsPrefersRoutedTunnel(t *testing.T) {
+	tunnels := []NetworkStatus{
+		{Name: "en0", RxRateMBs: 10, TxRateMBs: 12},
+		{Name: "wg0", RxRateMBs: 99, TxRateMBs: 101, defaultTunnel: true},
+	}
+	rx, tx := networkTotals(tunnels)
+	if rx != 99 || tx != 101 {
+		t.Fatalf("routed-tunnel totals = (%v,%v), want (99,101)", rx, tx)
+	}
+
+	pure := []NetworkStatus{
+		{Name: "en0", RxRateMBs: 10, TxRateMBs: 12},
+		{Name: "eth1", RxRateMBs: 5, TxRateMBs: 7},
+	}
+	rx2, tx2 := networkTotals(pure)
+	if rx2 != 15 || tx2 != 19 {
+		t.Fatalf("plain totals = (%v,%v), want (15,19)", rx2, tx2)
+	}
+}
+
+func TestIsTunnelInterfaceMatchesCommonPrefixes(t *testing.T) {
+	tunnels := []string{"utun4", "tun0", "wg0", "wgcf1", "ipsec0", "ppp1", "gre0", "sit1"}
+	for _, name := range tunnels {
+		if !isTunnelInterface(name) {
+			t.Errorf("isTunnelInterface(%q) = false, want true", name)
+		}
+	}
+	physical := []string{"en0", "eth0", "wlan0", "lo", "docker0", "veth1"}
+	for _, name := range physical {
+		if isTunnelInterface(name) {
+			t.Errorf("isTunnelInterface(%q) = true, want false", name)
+		}
+	}
+}
+
+func TestCollectNetworkKeepsDefaultRouteTunnelVisible(t *testing.T) {
+	original := ioCountersFunc
+	ioCountersFunc = func(bool) ([]gopsutilnet.IOCountersStat, error) {
+		return []gopsutilnet.IOCountersStat{
+			{Name: "en0", BytesRecv: 1000, BytesSent: 1200},
+			{Name: "wg0", BytesRecv: 5000, BytesSent: 6000},
+		}, nil
+	}
+	t.Cleanup(func() { ioCountersFunc = original })
+
+	base := time.Now()
+	c := &Collector{
+		prevNet: map[string]gopsutilnet.IOCountersStat{
+			"en0": {Name: "en0", BytesRecv: 0, BytesSent: 0},
+			"wg0": {Name: "wg0", BytesRecv: 0, BytesSent: 0},
+		},
+		lastNetAt:           base,
+		defaultNetInterface: "wg0",
+		rxHistoryBuf:        NewRingBuffer(NetworkHistorySize),
+		txHistoryBuf:        NewRingBuffer(NetworkHistorySize),
+	}
+
+	got := c.collectNetwork(base.Add(time.Second))
+	if len(got) != 2 {
+		t.Fatalf("expected tunnel + carrier, got %+v", got)
+	}
+	if got[0].Name != "wg0" || !got[0].defaultTunnel {
+		t.Fatalf("routed tunnel must be first and marked defaultTunnel, got %+v", got[0])
+	}
+	rx, tx := networkTotals(got)
+	if rx <= 0 || tx <= 0 {
+		t.Fatalf("expected positive tunnel totals, got rx=%v tx=%v", rx, tx)
+	}
+}
+
+func TestCollectNetworkFiltersNonDefaultTunnel(t *testing.T) {
+	original := ioCountersFunc
+	ioCountersFunc = func(bool) ([]gopsutilnet.IOCountersStat, error) {
+		return []gopsutilnet.IOCountersStat{
+			{Name: "en0", BytesRecv: 1000, BytesSent: 1200},
+			{Name: "wg0", BytesRecv: 5000, BytesSent: 6000},
+		}, nil
+	}
+	t.Cleanup(func() { ioCountersFunc = original })
+
+	base := time.Now()
+	c := &Collector{
+		prevNet: map[string]gopsutilnet.IOCountersStat{
+			"en0": {Name: "en0", BytesRecv: 0, BytesSent: 0},
+			"wg0": {Name: "wg0", BytesRecv: 0, BytesSent: 0},
+		},
+		lastNetAt:           base,
+		defaultNetInterface: "en0",
+		rxHistoryBuf:        NewRingBuffer(NetworkHistorySize),
+		txHistoryBuf:        NewRingBuffer(NetworkHistorySize),
+	}
+
+	got := c.collectNetwork(base.Add(time.Second))
+	if len(got) != 1 || got[0].Name != "en0" {
+		t.Fatalf("non-default tunnel must be filtered, got %+v", got)
+	}
+}
+
 func TestTunnelHintDoesNotExpandProxyJSONContract(t *testing.T) {
 	encoded, err := json.Marshal(ProxyStatus{
 		Enabled:  true,

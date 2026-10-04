@@ -43,6 +43,14 @@ func (c *Collector) primeNetworkCounters(now time.Time) {
 	}
 }
 
+// collectNetworkFull discovers the active default-route tunnel once per full
+// collection; fast frames reuse the latest cached route so they never spawn a
+// command on the 1s path.
+func (c *Collector) collectNetworkFull(now time.Time) []NetworkStatus {
+	c.defaultNetInterface = defaultRouteInterface()
+	return c.collectNetwork(now)
+}
+
 func (c *Collector) collectNetwork(now time.Time) []NetworkStatus {
 	if c.prevNet == nil {
 		c.prevNet = make(map[string]net.IOCountersStat)
@@ -65,6 +73,7 @@ func (c *Collector) collectNetwork(now time.Time) []NetworkStatus {
 
 	// Map interface IPs.
 	ifAddrs := c.getInterfaceIPsCached(now)
+	defaultInterface := c.defaultNetInterface
 
 	if c.lastNetAt.IsZero() {
 		c.lastNetAt = now
@@ -80,7 +89,7 @@ func (c *Collector) collectNetwork(now time.Time) []NetworkStatus {
 
 	var result []NetworkStatus
 	for _, cur := range stats {
-		if isNoiseInterface(cur.Name) {
+		if (isNoiseInterface(cur.Name) || isTunnelInterface(cur.Name)) && cur.Name != defaultInterface {
 			continue
 		}
 		prev, ok := c.prevNet[cur.Name]
@@ -90,10 +99,11 @@ func (c *Collector) collectNetwork(now time.Time) []NetworkStatus {
 		rx := float64(counterDelta(cur.BytesRecv, prev.BytesRecv)) / 1024.0 / 1024.0 / elapsed
 		tx := float64(counterDelta(cur.BytesSent, prev.BytesSent)) / 1024.0 / 1024.0 / elapsed
 		result = append(result, NetworkStatus{
-			Name:      cur.Name,
-			RxRateMBs: rx,
-			TxRateMBs: tx,
-			IP:        ifAddrs[cur.Name],
+			Name:          cur.Name,
+			RxRateMBs:     rx,
+			TxRateMBs:     tx,
+			IP:            ifAddrs[cur.Name],
+			defaultTunnel: cur.Name == defaultInterface && isTunnelInterface(cur.Name),
 		})
 	}
 
@@ -103,23 +113,37 @@ func (c *Collector) collectNetwork(now time.Time) []NetworkStatus {
 	}
 
 	sort.Slice(result, func(i, j int) bool {
+		// Keep the routed tunnel visible even when its physical carrier is busier.
+		if result[i].defaultTunnel != result[j].defaultTunnel {
+			return result[i].defaultTunnel
+		}
 		return result[i].RxRateMBs+result[i].TxRateMBs > result[j].RxRateMBs+result[j].TxRateMBs
 	})
 	if len(result) > 3 {
 		result = result[:3]
 	}
 
-	var totalRx, totalTx float64
-	for _, r := range result {
-		totalRx += r.RxRateMBs
-		totalTx += r.TxRateMBs
-	}
+	totalRx, totalTx := networkTotals(result)
 
 	// Update history using the global/aggregated stats
 	c.rxHistoryBuf.Add(totalRx)
 	c.txHistoryBuf.Add(totalTx)
 
 	return result
+}
+
+// Tunnel and carrier counters describe overlapping traffic. Keep both as
+// interface rows, but use the routed tunnel for the card and history totals so
+// a VPN that is the default route is not double-counted against its carrier.
+func networkTotals(stats []NetworkStatus) (rx, tx float64) {
+	for _, n := range stats {
+		if n.defaultTunnel {
+			return n.RxRateMBs, n.TxRateMBs
+		}
+		rx += n.RxRateMBs
+		tx += n.TxRateMBs
+	}
+	return rx, tx
 }
 
 func (c *Collector) getInterfaceIPsCached(now time.Time) map[string]string {
@@ -153,6 +177,21 @@ func getInterfaceIPs() map[string]string {
 func isNoiseInterface(name string) bool {
 	lower := strings.ToLower(name)
 	for _, prefix := range noiseInterfacePrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+var tunnelInterfacePrefixes = [...]string{"utun", "tun", "wg", "ipsec", "ppp", "gre", "sit"}
+
+// isTunnelInterface reports whether an interface is a VPN/tunnel device rather
+// than a physical carrier. The set spans the common Linux and macOS prefixes so
+// the default-route filter below behaves the same on both.
+func isTunnelInterface(name string) bool {
+	lower := strings.ToLower(name)
+	for _, prefix := range tunnelInterfacePrefixes {
 		if strings.HasPrefix(lower, prefix) {
 			return true
 		}

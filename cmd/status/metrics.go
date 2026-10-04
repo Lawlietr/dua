@@ -163,10 +163,11 @@ type DiskStatus struct {
 }
 
 type NetworkStatus struct {
-	Name      string  `json:"name"`
-	RxRateMBs float64 `json:"rx_rate_mbs"`
-	TxRateMBs float64 `json:"tx_rate_mbs"`
-	IP        string  `json:"ip"`
+	Name          string  `json:"name"`
+	RxRateMBs     float64 `json:"rx_rate_mbs"`
+	TxRateMBs     float64 `json:"tx_rate_mbs"`
+	IP            string  `json:"ip"`
+	defaultTunnel bool    // Sample-local routing hint; not part of the JSON contract.
 }
 
 // NetworkHistory holds the global network usage history.
@@ -232,18 +233,19 @@ type Collector struct {
 	lastBT   []BluetoothDevice
 
 	// Fast metrics (1s).
-	prevNet        map[string]net.IOCountersStat
-	lastNetAt      time.Time
-	rxHistoryBuf   *RingBuffer
-	txHistoryBuf   *RingBuffer
-	lastNetIPAt    time.Time
-	cachedNetIPs   map[string]string
-	lastGPUAt      time.Time
-	cachedGPU      []GPUStatus
-	lastGPUUsageAt time.Time
-	cachedGPUUsage float64
-	prevDiskIO     disk.IOCountersStat
-	lastDiskAt     time.Time
+	prevNet             map[string]net.IOCountersStat
+	lastNetAt           time.Time
+	rxHistoryBuf        *RingBuffer
+	txHistoryBuf        *RingBuffer
+	lastNetIPAt         time.Time
+	cachedNetIPs        map[string]string
+	defaultNetInterface string
+	lastGPUAt           time.Time
+	cachedGPU           []GPUStatus
+	lastGPUUsageAt      time.Time
+	cachedGPUUsage      float64
+	prevDiskIO          disk.IOCountersStat
+	lastDiskAt          time.Time
 
 	watchMu        sync.Mutex
 	processWatch   ProcessWatchConfig
@@ -404,7 +406,7 @@ func (c *Collector) collectFull() (MetricsSnapshot, error) {
 		func() (err error) { collected.diskStats, err = collectDisks(); return },
 		func() (err error) { collected.trashSize, collected.trashApprox = collectTrashSize(); return nil },
 		func() (err error) { collected.diskIO = c.collectDiskIO(now); return nil },
-		func() (err error) { collected.netStats = c.collectNetwork(now); return nil },
+		func() (err error) { collected.netStats = c.collectNetworkFull(now); return nil },
 		func() (err error) { collected.proxyStats = collectProxy(); return nil },
 		func() (err error) { collected.batteryStats, _ = collectBatteries(); return nil },
 		func() (err error) { collected.thermalStats = collectThermal(); return nil },
