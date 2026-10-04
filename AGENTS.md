@@ -190,49 +190,40 @@ go test ./cmd/analyze ./cmd/status
 
 ### Upstream Commits Since Fork (Analysis)
 
-As of the latest check, upstream has **32 commits** affecting `cmd/analyze/` and `cmd/status/` since the fork point:
+As of the latest check, upstream has **134 commits** affecting `cmd/analyze/` and `cmd/status/` since the fork point `b56f7561`. Upstream has moved far ahead and rewrote history, so the hashes referenced below are **stale** — re-derive candidates from `git log b56f7561..upstream/main -- cmd/analyze/ cmd/status/` against current upstream before porting.
+
+The live, prioritized backlog lives in **[TODO.md](TODO.md)**; this table is a summary only:
 
 | Category | Count | Action |
 |----------|-------|--------|
-| Already ported by dua | ~5 | N/A |
-| Mole-specific (cleanup/uninstall/etc.) | ~15 | **SKIP** |
-| macOS-specific (battery/ioreg/Spotlight) | ~8 | **SKIP** |
-| Potentially useful for review | ~4 | **REVIEW** |
+| Already ported by dua | 5 (A-layer, branch `port/a-layer-upstream`) | N/A |
+| Partial-coverage chain (analyze) | ~13 | **NEXT** — port as a unit |
+| Status stale-process / snapshot / health / locale / CPU card | ~15 | **REVIEW** |
+| UI/UX (pending overview animation, spinner UTF-8) | ~5 | **REVIEW** |
+| Mole-specific (cleanup/uninstall/Trash/battery/OrbStack/Claude) | ~90 | **SKIP** |
 
 #### Potentially Useful Commits (Review Needed)
 
-**Status process metrics improvements:**
-- `b3dc7f31` fix(status): mark stale process data in the TUI
-- `a0fd0dc1` fix(status): retain stale process samples
-- `c034c3fc` fix(status): preserve multiword process owner names
-- `0b1e34d5` fix(status): expose process sample freshness
-- `f92133a4` fix(status): surface zombie processes and parent owners
-- `0be91406` fix(status): read the core topology by level order
-- `455e6627` fix(status): stop reporting an active tunnel interface as a proxy
+Categories worth reviewing (full hashes and ordering in [TODO.md](TODO.md)); the old hashes `b3dc7f31`…`1e0d23c9` in the git-log history are stale:
 
-**Analyze snapshot improvements:**
-- `a300f00c` fix(analyze): reject stale snapshot probes
-- `76214aac` fix(analyze): refresh local snapshot count
-- `608d5d04` fix(analyze): surface local snapshot space
-
-**UI/UX improvements:**
-- `785b84c4` fix(ui): keep braille spinner frames UTF-8 safe
-- `2057e1ea` fix(analyze): measure the whole bar in eighths of a cell
-- `6e4c7455` fix(analyze): quiet the sub-cell bars and fit the scan path
-- `1e0d23c9` feat(status): balance two-column layout without growing dashboard
-
-**Performance:**
-- Scan cancellation improvements (大部分已由 dua port 過)
+- **Partial-coverage chain (analyze)** — `cf6165b2`…`53c4d362` (13 commits): keep partial du measurements and incomplete-size markers visible, carry coverage through live scan events, expose coverage in JSON, preserve child caches. **Port as one unit; the next batch.**
+- **Status stale-process** — `390294d5` mark stale process data in the TUI, `eb20146b` retain stale process samples.
+- **Analyze snapshot** — `a6d59d49` reject stale snapshot probes, `03311d45` refresh local snapshot count, `e9f52994` surface local snapshot space.
+- **UI/UX** — `99a9471d` align pending overview sizes, `d534c30b` animate pending overview rows, `8a2b84b1` keep braille spinner frames UTF-8 safe.
+- **Status health/locale/CPU card** — `4ee83df7`/`825ef91b`/`cd95c912` health diagnosis, `bfbe240d` `--watch` NDJSON, `afc83fc5`/`b5fc149a` C locale, `4cbab499`/`00a42fd9` CPU card.
+- **Analyze cache robustness** — `0dc42987`/`744e3a34` bound cache growth, `194bdd8c` prune expired cache, `6127d79c` serialize cache publication.
+- **Performance:** scan cancellation improvements are mostly already ported by dua.
 
 ### Cherry-pick Decision Log
 
 | Date | Category | Commits | Decision | Reason |
 |------|----------|---------|----------|--------|
-| 2025-08-28 | A: Status process metrics | `b3dc7f31`, `a0fd0dc1`, `c034c3fc`, `0b1e34d5`, `f92133a4`, `0be91406`, `455e6627` | **SKIP** | Requires `ZombieParent`, `summarizeZombies`, `processSample`, `parseProcessOutputStrict` and other types/functions not in HEAD. Not self-contained. |
-| 2025-08-28 | B: Analyze snapshot | `a300f00c`, `76214aac`, `608d5d04` | **SKIP** | Depends on snapshot infrastructure changes in upstream not present in HEAD. |
-| 2025-08-28 | C: UI/UX | `785b84c4`, `2057e1ea`, `6e4c7455`, `1e0d23c9` | **REVIEW LATER** | Low priority, needs TUI compatibility check. |
+| 2026-10-04 | A-layer: CLI help, spinner, status network/JSON, overview perf | `55d62acd`, `a9529a0f`, `b5608780`, `a4593718`, `676829c8` | **PORTED** | Self-contained, Linux-relevant fixes. Ported as a batch on branch `port/a-layer-upstream`; `make check` green; both binaries verified running. |
+| 2025-08-28 | A: Status stale-process | `390294d5`, `eb20146b` (+ older hashes `b3dc7f31`…`455e6627` now stale) | **REVIEW** | Smaller/self-contained than the original A set; re-check against current upstream before porting. |
+| 2025-08-28 | B: Analyze snapshot | `a6d59d49`, `03311d45`, `e9f52994` (+ older hashes `a300f00c`…`608d5d04` now stale) | **REVIEW** | May depend on snapshot infra; verify self-containment against current HEAD. |
+| 2025-08-28 | C: UI/UX | `99a9471d`, `d534c30b`, `8a2b84b1` (+ older hashes `785b84c4`…`1e0d23c9` now stale) | **REVIEW LATER** | Low priority, needs TUI compatibility check. |
 
-**Current policy**: Skip A/B category commits. They require significant porting effort (multiple new types, functions, and struct changes) and are not critical for dua's Linux target users. Re-evaluate if upstream refactors into smaller, self-contained patches.
+**Current policy**: Prefer small, self-contained, Linux-relevant fixes ported as a batch on a feature branch (never directly to `main`). The partial-coverage chain is the next batch. Re-derive all upstream hashes from current `upstream/main` before porting — history moved past the fork base and the hashes above this section are stale.
 
 ### Decision Checklist for Cherry-picking
 
@@ -258,4 +249,6 @@ If any answer is "no", skip the commit.
 - [x] Include version in `dua status` and `dua analyze` main output (TUI).
 - [x] Include version in `dua status` and `dua analyze` JSON output.
 - [x] Add `dua update` command to check GitHub and update in-place.
+- [x] Port A-layer upstream fixes (CLI help, braille spinner, default-route tunnel accounting, partial one-shot JSON, overview concurrency budget) — branch `port/a-layer-upstream`.
+- [ ] Port the partial-coverage chain (analyze partial coverage tracking) — the next batch; see [TODO.md](TODO.md).
 - [ ] Fold darwin/arm64 into `release.yml`'s build matrix (with macos smoke gate) and delete `upload-darwin.yml`.
