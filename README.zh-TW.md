@@ -55,6 +55,8 @@ make build
 cp bin/dua-analyze bin/dua-status /usr/local/bin/
 ```
 
+`dua status --json` 具有韌性：只要有一個 collector 失敗，它仍會印出已收集到的指標，把失敗訊息回報到 stderr，並以 exit 0 結束——和 `--watch` 持續串流的方式相同。僅當 CPU、記憶體、磁碟或流程指標完全無法取得，或 JSON 編碼失敗時，才會以 exit 1 結束。
+
 ## 功能
 
 - **`dua analyze`** — 視覺化磁碟瀏覽器：

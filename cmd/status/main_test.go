@@ -1,11 +1,18 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/shirou/gopsutil/v4/disk"
 )
 
 func TestShouldUseJSONOutput_ForceFlag(t *testing.T) {
@@ -436,5 +443,183 @@ func TestMetricsSnapshotFieldsHaveCollectionClassifications(t *testing.T) {
 	}
 	if len(classified) != typ.NumField() {
 		t.Fatalf("field classification count = %d, want %d", len(classified), typ.NumField())
+	}
+}
+
+func TestWriteJSONSnapshotPreservesPartialSnapshot(t *testing.T) {
+	data := MetricsSnapshot{
+		CPU:   CPUStatus{LogicalCPU: 4},
+		Disks: []DiskStatus{{Mount: "/", Total: 2 << 30}},
+	}
+	var stdout, stderr bytes.Buffer
+	// A collector failed, but core metrics succeeded: keep the snapshot, exit 0.
+	code := writeJSONSnapshot(&stdout, &stderr, data, errors.New("thermal probe failed"))
+	if code != 0 {
+		t.Fatalf("partial snapshot exit = %d, want 0 (stderr: %s)", code, &stderr)
+	}
+	if !strings.Contains(stderr.String(), "thermal probe failed") {
+		t.Fatalf("failure not reported on stderr: %q", &stderr)
+	}
+	var snapshot MetricsSnapshot
+	if err := json.Unmarshal(stdout.Bytes(), &snapshot); err != nil {
+		t.Fatalf("stdout is not one JSON snapshot: %v\n%s", err, &stdout)
+	}
+	if snapshot.CPU.LogicalCPU != 4 || snapshot.Disks[0].Total != 2<<30 {
+		t.Fatalf("successful metric lost: %+v", snapshot)
+	}
+}
+
+func TestWriteJSONSnapshotFailsWhenNothingCollected(t *testing.T) {
+	for _, collectErr := range []error{errors.New("cpu probe failed"), nil} {
+		var stdout, stderr bytes.Buffer
+		code := writeJSONSnapshot(&stdout, &stderr, MetricsSnapshot{}, collectErr)
+		if code != 1 {
+			t.Fatalf("empty snapshot exit = %d, want 1", code)
+		}
+		if stdout.Len() != 0 {
+			t.Fatalf("empty snapshot printed JSON: %q", &stdout)
+		}
+		if !strings.Contains(stderr.String(), "status: collect failed:") {
+			t.Fatalf("empty snapshot gave no reason: %q", &stderr)
+		}
+	}
+}
+
+func TestWriteJSONSnapshotReportsEncodeError(t *testing.T) {
+	w := failingWriter{err: errors.New("broken pipe")}
+	var stderr bytes.Buffer
+	code := writeJSONSnapshot(w, &stderr, MetricsSnapshot{CPU: CPUStatus{LogicalCPU: 2}}, nil)
+	if code != 1 {
+		t.Fatalf("encode error exit = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "error encoding JSON") {
+		t.Fatalf("encode error not reported: %q", &stderr)
+	}
+}
+
+func TestHasCoreMetrics(t *testing.T) {
+	cases := []struct {
+		name string
+		data MetricsSnapshot
+		want bool
+	}{
+		{"cpu", MetricsSnapshot{CPU: CPUStatus{LogicalCPU: 2}}, true},
+		{"memory", MetricsSnapshot{Memory: MemoryStatus{Total: 1}}, true},
+		{"disk", MetricsSnapshot{Disks: []DiskStatus{{Total: 1}}}, true},
+		{"empty", MetricsSnapshot{}, false},
+	}
+	for _, tc := range cases {
+		if got := hasCoreMetrics(tc.data); got != tc.want {
+			t.Errorf("%s: hasCoreMetrics = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+type failingWriter struct{ err error }
+
+func (w failingWriter) Write(p []byte) (int, error) { return 0, w.err }
+
+// TestStatusJSONProcess runs the real one-shot JSON path in a child so os.Exit
+// and stdout stay isolated. Optional-metric commands fail and the core probes
+// are controllable through the injected collectors.
+func TestStatusJSONProcess(t *testing.T) {
+	if os.Getenv("DUA_STATUS_JSON_TEST") == "" {
+		t.Skip("json subprocess helper")
+	}
+	runCmd = func(context.Context, string, ...string) (string, error) {
+		return "", errors.New("optional metric unavailable")
+	}
+	commandExists = func(string) bool { return false }
+	diskPartitionsFunc = func(bool) ([]disk.PartitionStat, error) {
+		return []disk.PartitionStat{{Device: "/dev/sda1", Mountpoint: "/", Fstype: "ext4"}}, nil
+	}
+	diskUsageFunc = func(string) (*disk.UsageStat, error) {
+		return &disk.UsageStat{Total: 2 << 30, Used: 1 << 30, Free: 1 << 30, UsedPercent: 50}, nil
+	}
+	collectProcessesFunc = func() ([]ProcessInfo, error) {
+		return nil, errors.New("process probe failed")
+	}
+	scenario := os.Getenv("DUA_STATUS_JSON_TEST")
+	if scenario != "1" {
+		collectCPUFunc = func() (CPUStatus, error) { return CPUStatus{}, errors.New("cpu probe failed") }
+		collectMemoryFunc = func() (MemoryStatus, error) { return MemoryStatus{}, errors.New("memory probe failed") }
+		diskPartitionsFunc = func(bool) ([]disk.PartitionStat, error) { return nil, errors.New("disk probe failed") }
+		switch scenario {
+		case "cpu":
+			collectCPUFunc = func() (CPUStatus, error) { return CPUStatus{LogicalCPU: 2}, nil }
+		case "memory":
+			collectMemoryFunc = func() (MemoryStatus, error) { return MemoryStatus{Total: 8 << 30}, nil }
+		}
+	}
+	runJSONMode()
+	os.Exit(0)
+}
+
+func TestJSONModePrintsPartialSnapshotWhenOneCollectorFails(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestStatusJSONProcess$")
+	cmd.Env = append(os.Environ(), "DUA_STATUS_JSON_TEST=1", "HOME="+t.TempDir())
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("json mode exited with %v; stderr: %s", err, &stderr)
+	}
+	if !strings.Contains(stderr.String(), "process probe failed") {
+		t.Fatalf("collector failure not reported on stderr: %q", &stderr)
+	}
+	var snapshot MetricsSnapshot
+	if err := json.Unmarshal(stdout.Bytes(), &snapshot); err != nil {
+		t.Fatalf("stdout is not one JSON snapshot: %v\n%s", err, &stdout)
+	}
+	if len(snapshot.Disks) != 1 || snapshot.Disks[0].Total != 2<<30 {
+		t.Fatalf("successful metrics missing: disks=%+v", snapshot.Disks)
+	}
+}
+
+func TestJSONModeAllCollectorsFailExitsOne(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestStatusJSONProcess$")
+	cmd.Env = append(os.Environ(), "DUA_STATUS_JSON_TEST=none", "HOME="+t.TempDir())
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 || stdout.Len() != 0 {
+		t.Fatalf("all failed: err=%v stdout=%q stderr=%q", err, &stdout, &stderr)
+	}
+}
+
+func TestJSONModePartialScenariosPreserveCoreMetric(t *testing.T) {
+	for _, scenario := range []string{"cpu", "memory"} {
+		t.Run(scenario, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestStatusJSONProcess$")
+			cmd.Env = append(os.Environ(), "DUA_STATUS_JSON_TEST="+scenario, "HOME="+t.TempDir())
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &stdout, &stderr
+			if err := cmd.Run(); err != nil {
+				t.Fatalf("partial snapshot failed: %v, %s", err, &stderr)
+			}
+			var snapshot MetricsSnapshot
+			if err := json.Unmarshal(stdout.Bytes(), &snapshot); err != nil {
+				t.Fatal(err)
+			}
+			switch scenario {
+			case "cpu":
+				if snapshot.CPU.LogicalCPU != 2 {
+					t.Fatalf("idle CPU sample lost: %+v", snapshot.CPU)
+				}
+			case "memory":
+				if snapshot.Memory.Total != 8<<30 {
+					t.Fatalf("memory sample lost: %+v", snapshot.Memory)
+				}
+			}
+			if !strings.Contains(stderr.String(), "probe failed") {
+				t.Fatalf("missing collector errors: %q", &stderr)
+			}
+		})
 	}
 }

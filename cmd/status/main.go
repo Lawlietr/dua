@@ -286,20 +286,49 @@ func runJSONMode() {
 	collector := NewCollector(processWatchOptionsFromFlags())
 
 	data, err := collector.Collect()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error collecting metrics: %v\n", err)
-		os.Exit(1)
-	}
-
 	data.Version = version
 	data.Commit = commit
+	if code := writeJSONSnapshot(os.Stdout, os.Stderr, data, err); code != 0 {
+		os.Exit(code)
+	}
+}
 
-	encoder := json.NewEncoder(os.Stdout)
+// writeJSONSnapshot follows the watch stream and the dashboard: one failed
+// collector is reported on stderr, and the metrics that did succeed are still
+// printed and exit 0. A snapshot with no core metrics, or an encoding error, fails.
+func writeJSONSnapshot(stdout, stderr io.Writer, data MetricsSnapshot, err error) int {
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "status: collect failed: %v\n", err)
+	}
+	if !hasCoreMetrics(data) {
+		if err == nil {
+			_, _ = fmt.Fprintln(stderr, "status: collect failed: no metrics collected")
+		}
+		return 1
+	}
+
+	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(data); err != nil {
-		fmt.Fprintf(os.Stderr, "error encoding JSON: %v\n", err)
-		os.Exit(1)
+		_, _ = fmt.Fprintf(stderr, "error encoding JSON: %v\n", err)
+		return 1
 	}
+	return 0
+}
+
+// hasCoreMetrics reports whether a snapshot carries at least one usable metric.
+// Idle CPU and an empty process list are valid; only a snapshot where every
+// core collector failed is unusable.
+func hasCoreMetrics(data MetricsSnapshot) bool {
+	if data.CPU.LogicalCPU > 0 || data.Memory.Total > 0 {
+		return true
+	}
+	for _, disk := range data.Disks {
+		if disk.Total > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // runTUIMode runs the interactive terminal UI.

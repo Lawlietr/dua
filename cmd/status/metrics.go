@@ -387,6 +387,11 @@ func (c *Collector) Collect() (MetricsSnapshot, error) {
 	return c.collectFull()
 }
 
+var (
+	collectCPUFunc    = collectCPU
+	collectMemoryFunc = collectMemory
+)
+
 func (c *Collector) collectFull() (MetricsSnapshot, error) {
 	now := time.Now()
 	hostInfo := collectHostInfo()
@@ -397,12 +402,12 @@ func (c *Collector) collectFull() (MetricsSnapshot, error) {
 	// 100ms, so measuring while our own collection burst runs inflates the
 	// reading with dua's own collection load.
 	var cpuErr error
-	collected.cpuStats, cpuErr = collectCPU()
+	collected.cpuStats, cpuErr = collectCPUFunc()
 
 	// Launch independent collection tasks.
 	tasks := []func() error{
 		func() error { return cpuErr },
-		func() (err error) { collected.memStats, err = collectMemory(); return },
+		func() (err error) { collected.memStats, err = collectMemoryFunc(); return },
 		func() (err error) { collected.diskStats, err = collectDisks(); return },
 		func() (err error) { collected.trashSize, collected.trashApprox = collectTrashSize(); return nil },
 		func() (err error) { collected.diskIO = c.collectDiskIO(now); return nil },

@@ -55,6 +55,8 @@ Install the binaries to a location on your `PATH`:
 cp bin/dua-analyze bin/dua-status /usr/local/bin/
 ```
 
+`dua status --json` is resilient: if one collector fails it still prints the metrics that were collected, reports the failure on stderr, and exits 0 — the same way `--watch` keeps streaming. It exits 1 only when none of CPU, memory, disk, or process metrics are available, or when JSON encoding fails.
+
 ## Features
 
 - **`dua analyze`** — visual disk explorer:
