@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,8 +23,51 @@ var (
 	commit   = "none"
 )
 
+// usageText is the help every other dua subcommand prints by hand. The Go flag
+// package would otherwise render "Usage of /usr/local/bin/dua-analyze:", naming a
+// bundled binary the user never typed, so the text is written out here instead.
+const usageText = `Usage: dua analyze [OPTIONS] [PATH]
+
+Explore disk usage. Without PATH, scans a machine-wide overview.
+
+Options:
+  --json          Output the analysis as JSON instead of the interactive TUI
+  -h, --help      Show this help message
+
+Examples:
+  dua analyze                 Machine-wide overview
+  dua analyze ~/Documents     Scan one directory
+  dua analyze --json /Volumes Machine-readable output
+`
+
+// parseArgs applies dua's CLI conventions to the flag package: help goes to
+// stdout and exits 0, and an unknown flag goes to stderr and exits 1 the way
+// every bash subcommand does, rather than the flag package's stderr-and-2.
+// It returns the exit code and whether main should keep running.
+func parseArgs(args []string, stdout, stderr io.Writer) (int, bool) {
+	flag.CommandLine.Init("dua analyze", flag.ContinueOnError)
+	// Parse must not print: this function decides which stream each message
+	// belongs on, and the default handler writes usage to stderr for both.
+	flag.CommandLine.SetOutput(io.Discard)
+	flag.CommandLine.Usage = func() {}
+
+	err := flag.CommandLine.Parse(args)
+	switch {
+	case errors.Is(err, flag.ErrHelp):
+		_, _ = fmt.Fprint(stdout, usageText)
+		return 0, false
+	case err != nil:
+		_, _ = fmt.Fprintln(stderr, err)
+		_, _ = fmt.Fprintln(stderr, "Use 'dua analyze --help' for usage information")
+		return 1, false
+	}
+	return 0, true
+}
+
 func main() {
-	flag.Parse()
+	if code, keepGoing := parseArgs(os.Args[1:], os.Stdout, os.Stderr); !keepGoing {
+		os.Exit(code)
+	}
 	if flag.NArg() > 0 && flag.Arg(0) == "version" {
 		fmt.Printf("dua version %s\n", version)
 		fmt.Printf("Commit: %s\n", commit)
