@@ -290,7 +290,7 @@ var skipExtensions = map[string]bool{
 	".hx":     true,
 }
 
-var spinnerFrames = []string{"|", "/", "-", "\\", "|", "/", "-", "\\"}
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 const (
 	colorPurple     = "\033[0;35m"
