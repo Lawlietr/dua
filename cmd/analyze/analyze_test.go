@@ -4434,3 +4434,137 @@ func TestLiveScanKeepsRowWhenTargetCannotBeScanned(t *testing.T) {
 	}
 	t.Fatal("live scan dropped a directory it could not scan")
 }
+
+// The terminal listing keeps at most maxEntries rows, so an unmeasurable row can
+// fall outside it. Coverage must not depend on that cap: the total stays a
+// labelled lower bound, the JSON keeps every scanned row, and an unknown row
+// never displaces a measured one. Ported from upstream b77a48d7.
+func TestPartialScanCoverageSurvivesEntryLimit(t *testing.T) {
+	if runTestWithoutPrivileges(t) {
+		return // the re-executed child runs the body as a non-root uid
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, "root")
+	locked := filepath.Join(root, "locked")
+	writeFileWithSize(t, filepath.Join(locked, "hidden"), 1<<20)
+	var want int64
+	for i := range maxEntries {
+		path := filepath.Join(root, fmt.Sprintf("readable-%02d", i))
+		writeFileWithSize(t, path, 4096)
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Sizes go through st_blocks, which some container filesystems
+		// under-report, so the expected aggregate is what this machine measured
+		// rather than maxEntries*4096 (see skipIfBlockAccountingUnreliable).
+		want += getActualFileSize(path, info)
+	}
+	if want <= 0 {
+		t.Fatalf("fixture produced no measurable bytes under %s", root)
+	}
+	lockDirFromReader(t, locked)
+
+	m := newModel(root, false)
+	msg := runScanResultCmd(t, m.scanFreshCmd(root))
+	if msg.err != nil {
+		t.Fatalf("scan failed: %+v", msg.err)
+	}
+	if msg.result.State != scanPartial || msg.result.TotalSize != want {
+		t.Fatalf("limited view lost aggregate coverage: state=%s total=%d want=%d", msg.result.State, msg.result.TotalSize, want)
+	}
+	if len(msg.result.Entries) != maxEntries {
+		t.Fatalf("listing must keep the %d largest rows, got %d", maxEntries, len(msg.result.Entries))
+	}
+	for _, entry := range msg.result.Entries {
+		if entry.Path == locked {
+			t.Fatal("unknown entry displaced a larger measured entry")
+		}
+	}
+
+	document := performDirectoryScanForJSON(root)
+	if document.ScanStatus != scanPartial.String() || document.TotalSize != msg.result.TotalSize || len(document.Entries) != maxEntries+1 {
+		t.Fatalf("JSON lost complete listing or aggregate coverage: status=%s total=%d entries=%d wantTotal=%d",
+			document.ScanStatus, document.TotalSize, len(document.Entries), msg.result.TotalSize)
+	}
+	for _, entry := range document.Entries {
+		if entry.Path == locked && entry.ScanStatus == scanUnavailable.String() {
+			return
+		}
+	}
+	t.Fatal("JSON omitted the entry it could not measure")
+}
+
+// The coverage marker has to survive going into a subdirectory and back, and
+// re-reading the tree once access is restored has to produce an authoritative
+// answer. Ported from upstream 318ee925, with one half re-derived: upstream
+// schedules a refresh on return because it treats every partial as retryable.
+// dua classifies a permission denial as durable (see isPermissionFailure), so a
+// returning user sees the lower bound already measured - a re-scan would report
+// the same bytes - and only R re-reads. What both projects promise, and what
+// this pins, is that the marker survives navigation and that the recovery is
+// real once it happens.
+func TestPartialNavigationRefreshRecoversCoverage(t *testing.T) {
+	if runTestWithoutPrivileges(t) {
+		return // the re-executed child runs the body as a non-root uid
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, "root")
+	readable := filepath.Join(root, "readable")
+	locked := filepath.Join(root, "locked")
+	// The fixture stays under subdirCacheMinFiles on purpose: a live scan can
+	// still be writing cache files after it publishes its result, so a tree big
+	// enough to clear that gate races the cleanup of t.TempDir(). Cache reuse for
+	// a partial subtree is pinned where it is reached synchronously, in
+	// TestCachedPartialSubtreeReadsBackAsPartial and
+	// TestRefreshOverUnreadableSubtreeKeepsItsMeasuredCache. What this test owns
+	// is that the coverage marker survives navigation and that re-reading relabels
+	// the rows it can now measure.
+	writeFileWithSize(t, filepath.Join(readable, "file"), 4096)
+	writeFileWithSize(t, filepath.Join(locked, "hidden"), 1<<20)
+	lockDirFromReader(t, locked)
+	lockDirFromReader(t, locked)
+
+	m := newModel(root, false)
+	updated, _ := m.Update(runScanResultCmd(t, m.scanFreshCmd(root)))
+	m = updated.(model)
+	if m.scanState != scanPartial || len(m.entries) != 2 {
+		t.Fatalf("initial scan did not exercise missing coverage: state=%s entries=%d", m.scanState, len(m.entries))
+	}
+	blockedTotal := m.totalSize
+
+	m.selectEntryPath(readable)
+	updated, cmd := m.enterSelectedDir()
+	m = updated.(model)
+	updated, _ = m.Update(runScanResultCmd(t, cmd))
+	m = updated.(model)
+	if m.path != readable || m.scanState != scanComplete {
+		t.Fatalf("drill-down retained parent coverage: path=%s state=%s", m.path, m.scanState)
+	}
+
+	if err := os.Chmod(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	updated, cmd = m.goBack()
+	m = updated.(model)
+	if m.path != root || m.scanState != scanPartial {
+		t.Fatalf("return lost partial history: path=%s state=%s", m.path, m.scanState)
+	}
+	if cmd != nil || m.scanning {
+		t.Fatal("a permission partial must not be re-scanned on return")
+	}
+
+	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
+	m = updated.(model)
+	if cmd == nil || !m.scanning {
+		t.Fatalf("R must re-read a directory whose access changed: scanning=%v cmd=%v", m.scanning, cmd == nil)
+	}
+	updated, _ = m.Update(runScanResultCmd(t, cmd))
+	m = updated.(model)
+	if m.scanState != scanComplete || m.scanning || m.totalSize <= blockedTotal || m.cache[root].NeedsRefresh || strings.Contains(m.View(), "unknown") {
+		t.Fatalf("refresh did not recover authoritative coverage: state=%s total=%d blockedTotal=%d scanning=%v\n%s",
+			m.scanState, m.totalSize, blockedTotal, m.scanning, m.View())
+	}
+}
