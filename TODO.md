@@ -3,8 +3,10 @@
 Live backlog of upstream (`tw93/Mole`) commits worth porting to dua.
 
 - **Fork base**: `b56f7561`.
-- **Source of truth**: `git log b56f7561..upstream/main -- cmd/analyze/ cmd/status/` (151 commits as of the 2026-10-09 re-check, `upstream/main` = `2e8ea7f3`, tag `V1.58.0`).
-- **Open upstream PRs**: 0 as of 2026-10-09 — only merged upstream commits need tracking.
+- **Source of truth**: `git log b56f7561..upstream/main -- cmd/analyze/ cmd/status/` → **140** commits (135 non-merge + 5 merge commits) as of the 2026-10-09 S0-1 audit; `git log --full-history` reports 165 because it also walks merge ancestors. Quote the method with the number: the earlier "151" in this file was an unqualified count of a different query.
+- **Upstream head**: `2e8ea7f3` (2026-10-09, `fix(optimize): …`), which sits a few commits past tag `V1.58.0` (`8710fdad`, 2026-10-05). The newest commit touching `cmd/analyze`/`cmd/status` is `1aad186b` (2026-10-08), already listed under SKIP — nothing new to triage since the previous check.
+- **Open upstream PRs**: 0 (`gh pr list --repo tw93/Mole --state open` → `[]`, 2026-10-09) — only merged upstream commits need tracking.
+- **Hash validity**: all hashes in this file (the 13-commit P0 chain plus P1/P2/P4/P5/P3) were checked with `git merge-base --is-ancestor <h> upstream/main` on 2026-10-09 — **all still live**, no re-derivation needed.
 - **Branch for porting**: `port/a-layer-upstream` (A-layer + UI/UX batches done). **Never port directly to `main`.**
 - Upstream rewrote history since the fork, so re-derive hashes against current `upstream/main` before porting. Every entry below was re-verified as a live `upstream/main` ancestor on 2026-10-09.
 
@@ -33,7 +35,26 @@ Keep incomplete / partially-sized measurements visible across navigation, live s
 Hotspots touched: `scanner.go`, `model.go`, `cache.go`, `live_scan.go`, `json.go`, `view.go`, `format.go`, `insights.go`, `update.go`.
 dua has no coverage symbols yet — this is **new functionality, not a refactor**.
 
-Measured drift (2026-10-09): applying each of the 13 commits individually against dua HEAD conflicts on **62 hunks** total (`50c89d9b` 9, `20ac485b` 8, `d04453f1` 8, `53c4d362` 7, …). Since the chain landed, upstream also moved the surrounding context: `scanner.go` +151/−36, `cache.go` +106/−41, `model.go` +119/−8, `live_scan.go` +65/−36, `view.go` +29/−21, `json.go` +32/−26. Port it by hand (rebase-style), not with `git cherry-pick`.
+Measured porting cost (2026-10-09 S0-1 audit). Method, because the first attempt at this number was wrong: `git apply --check -3` mixes a failed plain apply with the 3-way fallback in its output, so its "hunk" count measured nothing useful. The number below comes from a real `git cherry-pick -x <commit>` onto the branch tip inside a throwaway `git worktree`, counted as conflicted files and `<<<<<<<` markers, then `git cherry-pick --abort`:
+
+| Commit | Conflicted files | Markers | Card | Note |
+|---|---|---|---|---|
+| `cf6165b2` | 0 | 0 | `A-1` | applies clean — still has to compile and be wired by hand |
+| `d04453f1` | 2 | 2 | `A-2` | small conflicts, but it is the context-threading half of `A-2` |
+| `155a0cca` | 3 | 4 | `A-2` | the `du` error-semantics change |
+| `13f068ac` | 1 | 1 | `A-4` | cheap mechanically |
+| `580b8eb0` | 2 | 2 | `A-3` | |
+| `f5b4130c` | 1 | 1 | `B-3` | |
+| `50c89d9b` | **9** | **43** | `B-1`/`B-2` | the heaviest commit in the chain by a wide margin |
+| `20ac485b` | 7 | 13 | `B-2` | 606 of its changed lines are tests |
+| `53c4d362` | 6 | 7 | `C-1` | |
+| `a4350259` | 4 | 4 | `C-1` | |
+| `1cbaad5e` | 2 | 2 | `C-2` | |
+| `b77a48d7` | 2 | 2 | `D-2` | test + README only |
+| `318ee925` | 1 | 1 | `D-2` | test only |
+| **Total** | **40** | **82** | | 12 of 13 conflict; `cf6165b2` is the only clean apply |
+
+Context drift since the chain landed (`git diff d04453f1 upstream/main -- cmd/analyze/<file>`): `update.go` +189/−80, `scanner.go` +151/−36, `model.go` +119/−8, `cache.go` +106/−41, `live_scan.go` +65/−36, `json.go` +32/−26, `view.go` +29/−21 — ~960 changed lines around the code being ported. Port it by hand (rebase-style); a mechanical cherry-pick will not survive.
 
 ### Time-boxed work cards for P0
 
@@ -46,14 +67,14 @@ Slicing rules for this backlog — each card is a work-session unit:
 
 | Card | Scope | Upstream | Est. | Done when | Safe stop |
 |---|---|---|---|---|---|
-| `S0-1` ☐ | Re-fetch upstream, re-derive the chain diff, refresh the hash table in this file | — | 0.5h | this section lists current hashes and hunk counts | always safe |
+| `S0-1` ☑ | Re-fetch upstream, re-derive the chain diff, refresh the hash table in this file | — | 0.5h | this section lists current hashes and hunk counts | always safe |
 | `S0-2` ☐ | Test fixture helper for unreadable dirs that does **not** rely on `chmod 000` + root skip (our CI runs as root, so upstream's fixtures self-skip) | `318ee925` infra | 1h | helper + one self-verifying test runs under root CI | revert helper |
 | `A-1` ☐ | Add `scanState` type (`scanComplete`/`scanPartial`/…), `measurementState()`, unit tests. **Not wired into the model yet.** | `cf6165b2` (type part) | 45m | `go vet` clean, type tests pass, zero behavior change | self-contained |
 | `A-2` ☐ | Make `du` report "size + error = partial" instead of dropping the size; thread `context` through the du helpers | `155a0cca`, `d04453f1` | 60–90m | scanner-level tests show partial sizes survive a failing `du` | **highest-risk card — revert freely** |
 | `A-3` ☐ | Carry the state into scan results and the model (`m.scanState`, per-entry state); keep `NeedsRefresh` semantics consistent | `cf6165b2`, `580b8eb0` (model part) | 60m | a partial scan still renders correct totals and marks state | revert after A-2 |
 | `A-4` ☐ | Carry partial coverage through live scan events | `13f068ac` | 45m | live scan does not overwrite partial rows with zeros | independent of B |
 | `B-1` ☐ | `historyEntry` gains state; bump `cacheSchemaVersion` 3 → 4 so stale caches are rejected | `50c89d9b` (cache part) | 45m | old caches are ignored, not misread; note the one-time re-scan for release notes | must land with B-2 in the same release |
-| `B-2` ☐ | Cache partial scans correctly: partial results are reusable, a complete scan may overwrite them, stale writes are rejected, changed sizes invalidate | `50c89d9b`, `20ac485b` | 60–90m | navigation + relaunch keeps partial without rescanning forever | second riskiest card |
+| `B-2` ☐ | Cache partial scans correctly: partial results are reusable, a complete scan may overwrite them, stale writes are rejected, changed sizes invalidate | `50c89d9b`, `20ac485b` | 90–120m | navigation + relaunch keeps partial without rescanning forever | second riskiest card |
 | `B-3` ☐ | Keep complete child caches after a partial parent refresh | `f5b4130c` | 45m | child caches survive a partial refresh | low coupling |
 | `C-1` ☐ | TUI labels for partial/incomplete sizes (`measuredSizeLabel`, `scanSummary`) and pending-size column alignment | `53c4d362`, `580b8eb0` (view), `99a9471d`, `a4350259`, `b77a48d7` | 60m | a partial row is visibly distinguishable and aligned | view-only |
 | `C-2` ☐ | JSON contract: `scan_status` on the document and on entries + tests | `1cbaad5e` | 45m | `dua analyze --json` exposes coverage | additive field only |
@@ -61,7 +82,7 @@ Slicing rules for this backlog — each card is a work-session unit:
 | `D-1` ☐ | Real-machine A/B: run the same path before/after, diff the totals and the new markers | — | 30m | a short note in the PR with the observed diff | always safe |
 | `D-2` ☐ | Port the navigation-regression test suite on top of the `S0-2` fixture | `318ee925`, `b77a48d7` | 45m | tests run (not skip) under our root CI | test-only |
 
-Suggested session plan: `S0-1` + `S0-2` as a warm-up session; then one of `A-1`/`A-3`/`A-4`/`B-1`/`B-3`/`C-2`/`C-3` for a 45–60 minute slot, and reserve `A-2`/`B-2` for a session where you have 2+ hours free. Total for the chain: ~11h (plus buffer), which is why it must not be attempted as one sitting.
+Suggested session plan: `S0-1` ☑ + `S0-2` as a warm-up session; then one of `A-1`/`A-3`/`A-4`/`B-1`/`B-3`/`C-2`/`C-3` for a 45–60 minute slot, and reserve `A-2`/`B-2` for a session where you have 2+ hours free. Total for the chain: ~12h (plus buffer), which is why it must not be attempted as one sitting. `B-2` was re-sized upward from 60–90m after the 2026-10-09 cost probe: `50c89d9b` alone conflicts in 9 files with 43 markers.
 
 Hard ordering (everything else is free-choice):
 
@@ -163,6 +184,7 @@ One row per closed card. The `actual` column is the input for re-sizing future c
 
 | Date | Card | Est. | Actual | Commit | Outcome / notes |
 |---|---|---|---|---|---|
+| 2026-10-09 | `S0-1` | 0.5h | ~35m | (this commit) | Re-fetched: `upstream/main` unchanged (`2e8ea7f3`), 0 open PRs, newest analyze/status commit `1aad186b` already triaged → no new work. All 13 chain hashes + every other backlog hash verified as live ancestors. Corrected the commit count 151 → **140** (135 non-merge + 5 merges) and replaced the bogus "62 hunks" figure with a cherry-pick probe: 40 conflicted files / 82 markers, `50c89d9b` worst at 9/43. Re-sized `B-2` to 90–120m. Lesson: measure with `git cherry-pick -x` in a scratch worktree, never with `git apply --check -3` output. |
 | 2026-10-09 | P3 batch (pre-card era) | — | ~2h | `9952bdde`, `e2994ff1` | 3 upstream commits + 4 tests; mutation-checked the tick guard. `make check` green, pty smoke OK. Not yet merged to `main`. |
 | 2026-10-09 | docs re-audit | — | ~1h | `67583cad`, `3d011733` | Corrected the A-layer upstream mapping, re-derived counts for `V1.58.0`, split the backlog into cards. |
 

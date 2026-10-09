@@ -167,13 +167,22 @@ git log --oneline upstream/main -- cmd/analyze/ cmd/status/
 # 3. Filter out Mole-specific commits (cleanup, uninstall, trash, delete, battery, etc.)
 #    Keep only: bug fixes, performance improvements, UI fixes, Linux-relevant changes
 
-# 4. Cherry-pick selected commits
+# 4. Cost-probe a candidate batch before scheduling it: cherry-pick each commit onto the
+#    branch tip in a throwaway worktree, count conflicts, then abort
+git worktree add --detach /tmp/probe <branch-tip>
+cd /tmp/probe && git cherry-pick -x <hash>   # then: git diff --name-only --diff-filter=U
+git cherry-pick --abort && git worktree remove --force /tmp/probe   # leave nothing behind
+# Do NOT cost-probe with `git apply --check -3`: its output mixes a failed plain apply with
+# the 3-way fallback, so it produces numbers that look like conflict counts but are not.
+
+# 5. Cherry-pick selected commits (expect hand resolution: the P0 chain conflicts in 40 files
+#    / 82 markers against current dua; per-commit table in TODO.md)
 git cherry-pick <commit-hash>
 
-# 5. Run tests after each cherry-pick
+# 6. Run tests after each cherry-pick
 go test ./cmd/analyze ./cmd/status
 
-# 6. Commit or amend as appropriate
+# 7. Commit or amend as appropriate
 ```
 
 ### Commit Classification Guide
@@ -190,7 +199,7 @@ go test ./cmd/analyze ./cmd/status
 
 ### Upstream Commits Since Fork (Analysis)
 
-As of the 2026-10-09 check (`upstream/main` = `2e8ea7f3`, tag `V1.58.0`), upstream has **151 commits** affecting `cmd/analyze/` and `cmd/status/` since the fork point `b56f7561`, and **0 open PRs**. Upstream has moved far ahead, so re-derive candidates from `git log b56f7561..upstream/main -- cmd/analyze/ cmd/status/` against current upstream before porting — the hashes in the older tables below may predate a history rewrite.
+As of the 2026-10-09 audit (`upstream/main` = `2e8ea7f3`, newest tag `V1.58.0` = `8710fdad`), `git log b56f7561..upstream/main -- cmd/analyze/ cmd/status/` holds **140 commits** (135 non-merge + 5 merge; `--full-history` reports 165), and there are **0 open PRs**. Always state the query alongside a count — an unqualified count of the same range has produced 151 in an earlier revision of these docs and was wrong. Upstream keeps moving, so re-derive candidates from that command before porting; the hashes in [TODO.md](TODO.md) were verified as live ancestors of `upstream/main` on 2026-10-09 and only need re-deriving if upstream rewrites history again.
 
 The live, prioritized backlog lives in **[TODO.md](TODO.md)**; this table is a summary only:
 
