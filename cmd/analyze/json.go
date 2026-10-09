@@ -12,8 +12,14 @@ import (
 )
 
 type jsonOutput struct {
-	Version    string          `json:"version"`
-	Commit     string          `json:"commit"`
+	Version string `json:"version"`
+	Commit  string `json:"commit"`
+	// ScanStatus is the coverage of every measurement below it: "complete" only
+	// when nothing was skipped, "partial" when some subtree could not be read.
+	// A consumer that adds up total_size has to know it may be a lower bound.
+	// It is a string here rather than scanState's MarshalText (upstream's route)
+	// because scanState is also the on-disk cache type: same wire, no storage change.
+	ScanStatus string          `json:"scan_status"`
 	Path       string          `json:"path"`
 	Overview   bool            `json:"overview"`
 	Entries    []jsonEntry     `json:"entries"`
@@ -23,6 +29,9 @@ type jsonOutput struct {
 }
 
 type jsonEntry struct {
+	// ScanStatus carries the same word as the document for this one row, so an
+	// "unavailable" row cannot be read as a directory that uses no space.
+	ScanStatus string `json:"scan_status"`
 	Name       string `json:"name"`
 	Path       string `json:"path"`
 	Size       int64  `json:"size"`
@@ -70,6 +79,7 @@ func performDirectoryScanForJSON(path string) jsonOutput {
 	}
 
 	return jsonOutput{
+		ScanStatus: result.State.String(),
 		Path:       path,
 		Overview:   false,
 		Entries:    jsonEntriesFromDirEntries(result.Entries, false, nil),
@@ -94,11 +104,14 @@ func performOverviewScanForJSONWithEntries(path string, insightEntries, overview
 	var totalSize int64
 	entries := make([]dirEntry, 0, len(overviewEntries))
 	for _, entry := range measureOverviewEntriesForJSON(overviewEntries, insightPaths) {
-		// Match the TUI: omit scanned insight/tool entries that ended up empty.
-		if entry.Size == 0 {
+		// Match the TUI: omit scanned insight/tool entries that measured out empty.
+		// A row that measured nothing is not empty, it is unknown: dropping it
+		// would report "could not read" as "uses no space" and hide the only row
+		// that explains why the total is a lower bound.
+		if entry.Size == 0 && entry.State == scanComplete {
 			continue
 		}
-		totalSize += entry.Size
+		totalSize += max(entry.Size, 0)
 		entries = append(entries, entry)
 	}
 
@@ -107,10 +120,11 @@ func performOverviewScanForJSONWithEntries(path string, insightEntries, overview
 	})
 
 	return jsonOutput{
-		Path:      path,
-		Overview:  true,
-		Entries:   jsonEntriesFromDirEntries(entries, true, insightPaths),
-		TotalSize: totalSize,
+		ScanStatus: entryScanState(entries).String(),
+		Path:       path,
+		Overview:   true,
+		Entries:    jsonEntriesFromDirEntries(entries, true, insightPaths),
+		TotalSize:  totalSize,
 	}
 }
 
@@ -135,23 +149,30 @@ func measureOverviewEntriesForJSON(overviewEntries []dirEntry, insightPaths map[
 			defer func() { <-sem }()
 
 			var (
-				size int64
-				err  error
+				size  int64
+				err   error
+				state scanState
 			)
 
-			if cached, state, cacheErr := loadOverviewCachedMeasurement(item.Path); cacheErr == nil && cached > 0 {
-				size, item.State = cached, state
+			if cached, cachedState, cacheErr := loadOverviewCachedMeasurement(item.Path); cacheErr == nil && cached > 0 {
+				// A stored lower bound stays a lower bound. Upstream could recompute
+				// the state here because its cache read returned bytes only; dua's
+				// returns the state too, and deriving one from (bytes, no error)
+				// would turn a cached partial back into a measured one - the same
+				// read-side bug B-2 removed in loadCachedSubdirResult.
+				size, state = cached, cachedState
 			} else if insightPaths[item.Path] {
 				size, err = measureInsightSize(context.Background(), item.Path)
+				state = measurementState(size, err)
 			} else {
 				size, err = measureOverviewSize(context.Background(), item.Path)
+				state = measurementState(size, err)
 			}
 
-			// A measurement that failed part-way still carries the bytes it got;
-			// exposing that coverage in the JSON document is card C-2.
-			if err == nil || size > 0 {
-				item.Size = size
-			}
+			// The bytes a failed measurement did collect are kept and labelled. The
+			// document's scan_status and this row's say which half is unknown, so a
+			// lower bound can never be mistaken for a total.
+			item.Size, item.State = size, state
 			results <- measurement{index: index, entry: item}
 		})
 	}
@@ -169,11 +190,12 @@ func jsonEntriesFromDirEntries(entries []dirEntry, isOverview bool, insightPaths
 	output := make([]jsonEntry, 0, len(entries))
 	for _, entry := range entries {
 		item := jsonEntry{
-			Name:      entry.Name,
-			Path:      entry.Path,
-			Size:      entry.Size,
-			IsDir:     entry.IsDir,
-			Cleanable: entry.IsDir && isCleanableDir(entry.Path),
+			ScanStatus: entry.State.String(),
+			Name:       entry.Name,
+			Path:       entry.Path,
+			Size:       entry.Size,
+			IsDir:      entry.IsDir,
+			Cleanable:  entry.IsDir && isCleanableDir(entry.Path),
 		}
 
 		if isOverview {

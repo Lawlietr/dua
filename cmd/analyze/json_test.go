@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -97,6 +98,182 @@ func TestJSONOverviewEntriesKeepPartialMeasurement(t *testing.T) {
 	}
 	if entries[0].Size != 8192 {
 		t.Fatalf("JSON output dropped a partial measurement: got %d, want 8192", entries[0].Size)
+	}
+	// Keeping the bytes is only half of it: the row has to say it kept only some
+	// of them, or the same total reads as a finished measurement downstream.
+	if entries[0].State != scanPartial {
+		t.Fatalf("a partial du measurement lost its coverage: %#v", entries[0])
+	}
+}
+
+// jsonDocumentProbe reads the published wire form back, so a rename that leaves
+// the Go fields alone still shows up as a missing key here.
+type jsonDocumentProbe struct {
+	ScanStatus string `json:"scan_status"`
+	TotalSize  int64  `json:"total_size"`
+	Entries    []struct {
+		Path       string `json:"path"`
+		Size       int64  `json:"size"`
+		ScanStatus string `json:"scan_status"`
+	} `json:"entries"`
+}
+
+func decodeScanDocument(t *testing.T, result jsonOutput) jsonDocumentProbe {
+	t.Helper()
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal JSON document: %v", err)
+	}
+	var document jsonDocumentProbe
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatalf("decode JSON document: %v", err)
+	}
+	return document
+}
+
+func sumProbeSizes(document jsonDocumentProbe) int64 {
+	var total int64
+	for _, entry := range document.Entries {
+		total += entry.Size
+	}
+	return total
+}
+
+// A clean scan must say so. Without the field, or with a document that is always
+// "partial", automation cannot tell a complete total from a lower bound - which
+// is the only reason to publish it at all.
+func TestAnalyzeJSONCarriesCoverageOnTheDocumentAndEachEntry(t *testing.T) {
+	root := t.TempDir()
+	writeFileWithSize(t, filepath.Join(root, "readable"), 4096)
+
+	document := decodeScanDocument(t, performDirectoryScanForJSON(root))
+	if document.ScanStatus != "complete" {
+		t.Fatalf("a clean scan must report complete coverage, got %q", document.ScanStatus)
+	}
+	if len(document.Entries) == 0 {
+		t.Fatal("expected the scanned entry in the document")
+	}
+	for _, entry := range document.Entries {
+		if entry.ScanStatus != "complete" {
+			t.Fatalf("a measured entry must not report %q: %#v", entry.ScanStatus, entry)
+		}
+	}
+	if got, want := document.TotalSize, sumProbeSizes(document); got != want {
+		t.Fatalf("total_size %d does not match the listed entries %d", got, want)
+	}
+}
+
+// An overview row that could not be measured stays in the document: it is the
+// only thing that explains why total_size is a lower bound. A path that does not
+// exist is used here so the case runs under root CI without a permission fixture.
+func TestJSONOverviewKeepsUnmeasurableRowsAndTheirCoverage(t *testing.T) {
+	root := t.TempDir()
+	writeFileWithSize(t, filepath.Join(root, "readable"), 4096)
+	missing := filepath.Join(root, "gone")
+
+	result := performOverviewScanForJSONWithEntries(root, nil, []dirEntry{
+		{Name: "Gone", Path: missing, IsDir: true, Size: -1},
+		{Name: "Root", Path: root, IsDir: true, Size: -1},
+	})
+	document := decodeScanDocument(t, result)
+
+	if document.ScanStatus != "partial" {
+		t.Fatalf("an unmeasurable row must make the document partial, got %q", document.ScanStatus)
+	}
+	var measured bool
+	for _, entry := range document.Entries {
+		if entry.Path == missing {
+			if entry.ScanStatus != "unavailable" || entry.Size != 0 {
+				t.Fatalf("an unknown size must not be presented as a number: %#v", entry)
+			}
+			measured = true
+		}
+	}
+	if !measured {
+		t.Fatalf("the unmeasurable row was dropped, hiding why the total is a floor: %#v", document.Entries)
+	}
+	// A pending row enters as -1; leaking that into the total would understate
+	// the scan below zero and cancel out real bytes.
+	if got, want := document.TotalSize, sumProbeSizes(document); got != want {
+		t.Fatalf("total_size %d does not match the listed entries %d", got, want)
+	}
+}
+
+// The overview cache stores coverage, and a cached lower bound must still read
+// as one after a reload. Deriving the state from "bytes came back with no
+// error" reports a cached partial as measured - the read-side bug B-2 removed in
+// loadCachedSubdirResult, which this path would reintroduce.
+func TestJSONOverviewReadsBackACachedPartialAsPartial(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	target := filepath.Join(home, "target")
+	writeFileWithSize(t, filepath.Join(target, "file"), 4096)
+
+	if err := storeOverviewMeasurement(target, 4096, true); err != nil {
+		t.Fatalf("store a partial overview measurement: %v", err)
+	}
+
+	entries := measureOverviewEntriesForJSON([]dirEntry{{Name: "target", Path: target, Size: -1, IsDir: true}}, nil)
+	if len(entries) != 1 {
+		t.Fatalf("expected one measured entry, got %#v", entries)
+	}
+	if entries[0].State != scanPartial {
+		t.Fatalf("a cached partial was reported as %q: %#v", entries[0].State, entries[0])
+	}
+}
+
+// The same coverage on a real permission denial, which is how a user reaches it.
+// Both shapes are checked because they are produced by different code paths: the
+// walk marks the scan it was asked to do, the overview marks each row separately.
+func TestAnalyzeJSONReportsPartialCoverageAndUnavailableSizes(t *testing.T) {
+	if runTestWithoutPrivileges(t) {
+		return // the re-executed child runs the body as a non-root uid
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, "root")
+	locked := filepath.Join(root, "locked")
+	writeFileWithSize(t, filepath.Join(root, "readable"), 4096)
+	writeFileWithSize(t, filepath.Join(locked, "hidden"), 1<<20)
+	lockDirFromReader(t, locked)
+
+	for _, overview := range []bool{false, true} {
+		t.Run(fmt.Sprintf("overview=%t", overview), func(t *testing.T) {
+			var result jsonOutput
+			if overview {
+				result = performOverviewScanForJSONWithEntries(root, nil, []dirEntry{
+					{Name: "locked", Path: locked, IsDir: true, Size: -1},
+					{Name: "root", Path: root, IsDir: true, Size: -1},
+				})
+			} else {
+				result = performDirectoryScanForJSON(root)
+			}
+			document := decodeScanDocument(t, result)
+
+			if document.ScanStatus != "partial" {
+				t.Fatalf("an unreadable subtree must make the document partial, got %q", document.ScanStatus)
+			}
+			if document.TotalSize != sumProbeSizes(document) {
+				t.Fatalf("total_size %d does not match the listed entries %d", document.TotalSize, sumProbeSizes(document))
+			}
+			for _, entry := range document.Entries {
+				if entry.Path != locked {
+					continue
+				}
+				// Not "unavailable" with a zero size, as the upstream form of this
+				// test expects: a walk can still stat the directory itself, so its
+				// own blocks are measured and only its contents are unknown. That is
+				// partial, and inventing a zero would understate the tree. What the
+				// contract requires is that the row survives and never claims to be
+				// finished. A size that is fully unknown is pinned separately by
+				// TestJSONOverviewKeepsUnmeasurableRowsAndTheirCoverage.
+				if entry.ScanStatus == "complete" {
+					t.Fatalf("an unreadable directory claimed complete coverage: %#v", entry)
+				}
+				return
+			}
+			t.Fatalf("JSON omitted the unreadable entry: %#v", document.Entries)
+		})
 	}
 }
 
