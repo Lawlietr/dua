@@ -79,6 +79,27 @@ func TestJSONEntriesFromDirEntriesIncludesMetadata(t *testing.T) {
 	}
 }
 
+func TestJSONOverviewEntriesKeepPartialMeasurement(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	target := filepath.Join(home, "target")
+	writeFileWithSize(t, filepath.Join(target, "file"), 4096)
+
+	stubDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stubDir, "du"), []byte("#!/bin/sh\nprintf '8\tpartial\\n'\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write du stub: %v", err)
+	}
+	t.Setenv("PATH", stubDir)
+
+	entries := measureOverviewEntriesForJSON([]dirEntry{{Name: "target", Path: target, Size: -1, IsDir: true}}, nil)
+	if len(entries) != 1 {
+		t.Fatalf("expected one measured entry, got %#v", entries)
+	}
+	if entries[0].Size != 8192 {
+		t.Fatalf("JSON output dropped a partial measurement: got %d, want 8192", entries[0].Size)
+	}
+}
+
 func TestJSONEntriesFromDirEntriesMarksOverviewInsights(t *testing.T) {
 	entry := dirEntry{
 		Name:  "Old Downloads (90d+)",

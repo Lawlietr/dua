@@ -142,12 +142,14 @@ func measureOverviewEntriesForJSON(overviewEntries []dirEntry, insightPaths map[
 			if cached, cacheErr := loadOverviewCachedSize(item.Path); cacheErr == nil && cached > 0 {
 				size = cached
 			} else if insightPaths[item.Path] {
-				size, err = measureInsightSize(item.Path)
+				size, err = measureInsightSize(context.Background(), item.Path)
 			} else {
-				size, err = measureOverviewSize(item.Path)
+				size, err = measureOverviewSize(context.Background(), item.Path)
 			}
 
-			if err == nil {
+			// A measurement that failed part-way still carries the bytes it got;
+			// JSON coverage marking is card B-2.
+			if err == nil || size > 0 {
 				item.Size = size
 			}
 			results <- measurement{index: index, entry: item}

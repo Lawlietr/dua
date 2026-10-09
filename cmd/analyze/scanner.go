@@ -973,7 +973,10 @@ scanChildren:
 
 // measureOverviewSize calculates the size of a directory using multiple strategies.
 // When scanning Home, it excludes ~/Library to avoid duplicate counting.
-func measureOverviewSize(path string) (int64, error) {
+// A measurement that covers only part of the tree is returned together with the
+// failure that ended it, so callers can show the number without trusting it as
+// complete, and so the slow logical walk is not paid for twice.
+func measureOverviewSize(ctx context.Context, path string) (int64, error) {
 	if path == "" {
 		return 0, fmt.Errorf("empty path")
 	}
@@ -994,22 +997,31 @@ func measureOverviewSize(path string) (int64, error) {
 		excludePath = filepath.Join(home, "Library")
 	}
 
-	if duSize, err := getDirectorySizeFromDuWithExcludeAndIgnores(context.Background(), path, excludePath, overviewIgnoreNamesForPath(path)); err == nil {
-		_ = storeOverviewSize(path, duSize)
-		return duSize, nil
+	ctx, cancel := context.WithTimeout(ctx, duTimeout)
+	defer cancel()
+
+	ignoreNames := overviewIgnoreNamesForPath(path)
+	size, err := getDirectorySizeFromDuWithExcludeAndIgnores(ctx, path, excludePath, ignoreNames)
+	if err != nil && size == 0 && ctx.Err() == nil {
+		// Only a measurement with nothing usable is worth the recursive walk.
+		size, err = getDirectoryLogicalSizeWithExclude(ctx, path, excludePath, ignoreNames)
+	}
+	if err == nil {
+		_ = storeOverviewSize(path, size)
+		return size, nil
+	}
+	if size > 0 {
+		// A partial total is never published to the overview cache: a cached
+		// number carries no coverage marker, so it would read as complete.
+		return size, err
 	}
 
-	if logicalSize, err := getDirectoryLogicalSizeWithExclude(path, excludePath); err == nil {
-		_ = storeOverviewSize(path, logicalSize)
-		return logicalSize, nil
-	}
-
-	if cached, err := loadCacheFromDisk(path); err == nil {
+	if cached, cacheErr := loadCacheFromDisk(path); cacheErr == nil {
 		_ = storeOverviewSize(path, cached.TotalSize)
 		return cached.TotalSize, nil
 	}
 
-	return 0, fmt.Errorf("unable to measure directory size with fast methods")
+	return 0, fmt.Errorf("unable to measure directory size with fast methods: %w", err)
 }
 
 func getDirectorySizeFromDu(ctx context.Context, path string) (int64, error) {
@@ -1085,7 +1097,7 @@ func getDirectorySizeFromDuWithExcludeAndIgnores(ctx context.Context, path strin
 	// When excluding a path (e.g., ~/Library), subtract only that exact directory instead of ignoring every "Library"
 	if excludePath != "" {
 		if filepath.Dir(filepath.Clean(excludePath)) == filepath.Clean(path) {
-			return getDirectorySizeFromDuSkippingImmediateChild(path, excludePath, runDuSize)
+			return getDirectorySizeFromDuSkippingImmediateChild(ctx, path, excludePath, runDuSize)
 		}
 
 		totalSize, err := runDuSize(path)
@@ -1146,7 +1158,7 @@ func overviewIgnoreNamesForPath(path string) []string {
 	return ignoreNames
 }
 
-func getDirectorySizeFromDuSkippingImmediateChild(path string, excludePath string, runDuSize func(string) (int64, error)) (int64, error) {
+func getDirectorySizeFromDuSkippingImmediateChild(ctx context.Context, path string, excludePath string, runDuSize func(string) (int64, error)) (int64, error) {
 	path = filepath.Clean(path)
 	excludePath = filepath.Clean(excludePath)
 
@@ -1179,6 +1191,10 @@ func getDirectorySizeFromDuSkippingImmediateChild(path string, excludePath strin
 	sem := make(chan struct{}, workerCount)
 
 	for _, entry := range entries {
+		if ctx.Err() != nil {
+			failures.record(ctx.Err())
+			break
+		}
 		fullPath := filepath.Join(path, entry.Name())
 		if filepath.Clean(fullPath) == excludePath {
 			continue
@@ -1194,7 +1210,10 @@ func getDirectorySizeFromDuSkippingImmediateChild(path string, excludePath strin
 			continue
 		}
 
-		sem <- struct{}{}
+		if err := acquireScanPermit(ctx, sem); err != nil {
+			failures.record(err)
+			break
+		}
 		wg.Go(func() {
 			defer func() { <-sem }()
 
@@ -1209,17 +1228,27 @@ func getDirectorySizeFromDuSkippingImmediateChild(path string, excludePath strin
 	return total, failures.first
 }
 
-func getDirectoryLogicalSizeWithExclude(path string, excludePath string) (int64, error) {
+// getDirectoryLogicalSizeWithExclude walks the tree and sums file sizes. It is
+// the fallback for a `du` run that produced nothing usable, so it reports its
+// own gaps instead of returning a quietly smaller total: the caller already has
+// to handle a partial result from du, and an unmarked partial from the fallback
+// would erase the difference.
+func getDirectoryLogicalSizeWithExclude(ctx context.Context, path string, excludePath string, ignoreNames []string) (int64, error) {
 	var total int64
+	var failures scanFailures
 	err := filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if err != nil {
-			if os.IsPermission(err) {
+			failures.record(err)
+			if d != nil && d.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		// Skip excluded path
-		if excludePath != "" && p == excludePath {
+		// Skip excluded path and the names the overview already excludes by name.
+		if p == excludePath || (p != path && d.IsDir() && slices.Contains(ignoreNames, d.Name())) {
 			return filepath.SkipDir
 		}
 		if d.IsDir() {
@@ -1227,15 +1256,14 @@ func getDirectoryLogicalSizeWithExclude(path string, excludePath string) (int64,
 		}
 		info, err := d.Info()
 		if err != nil {
+			failures.record(err)
 			return nil
 		}
 		total += getActualFileSize(p, info)
 		return nil
 	})
-	if err != nil && err != filepath.SkipDir {
-		return 0, err
-	}
-	return total, nil
+	failures.record(err)
+	return total, failures.first
 }
 
 // countableFileSize returns the on-disk size to attribute to a regular file.

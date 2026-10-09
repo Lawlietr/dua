@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func writeFileWithSize(t testing.TB, path string, size int) {
@@ -31,7 +32,7 @@ func TestGetDirectoryLogicalSizeWithExclude(t *testing.T) {
 	writeFileWithSize(t, libFile, 200)
 	writeFileWithSize(t, projectLibFile, 300)
 
-	total, err := getDirectoryLogicalSizeWithExclude(base, "")
+	total, err := getDirectoryLogicalSizeWithExclude(context.Background(), base, "", nil)
 	if err != nil {
 		t.Fatalf("getDirectoryLogicalSizeWithExclude (no exclude) error: %v", err)
 	}
@@ -39,7 +40,7 @@ func TestGetDirectoryLogicalSizeWithExclude(t *testing.T) {
 		t.Fatalf("expected total 600 bytes, got %d", total)
 	}
 
-	excluding, err := getDirectoryLogicalSizeWithExclude(base, filepath.Join(base, "Library"))
+	excluding, err := getDirectoryLogicalSizeWithExclude(context.Background(), base, filepath.Join(base, "Library"), nil)
 	if err != nil {
 		t.Fatalf("getDirectoryLogicalSizeWithExclude (exclude Library) error: %v", err)
 	}
@@ -60,7 +61,7 @@ func TestGetDirectorySizeFromDuSkippingImmediateChildDoesNotMeasureExcludedPath(
 	}
 
 	var measured []string
-	size, err := getDirectorySizeFromDuSkippingImmediateChild(base, excluded, func(path string) (int64, error) {
+	size, err := getDirectorySizeFromDuSkippingImmediateChild(context.Background(), base, excluded, func(path string) (int64, error) {
 		measured = append(measured, path)
 		return 100, nil
 	})
@@ -118,7 +119,7 @@ func TestSizeSkippingImmediateChildKeepsPartialTotals(t *testing.T) {
 	}
 
 	measure := func(brokenErr error) (int64, error) {
-		return getDirectorySizeFromDuSkippingImmediateChild(base, excluded, func(path string) (int64, error) {
+		return getDirectorySizeFromDuSkippingImmediateChild(context.Background(), base, excluded, func(path string) (int64, error) {
 			switch path {
 			case broken:
 				// 4096 bytes were measured before the failure, and they count.
@@ -216,6 +217,97 @@ func TestLiveScanFoldedDirectoryKeepsPartialDuSize(t *testing.T) {
 	}
 	if result.TotalSize != 8192 {
 		t.Fatalf("live scan dropped the partial du measurement: got %d, want 8192 (%+v)", result.TotalSize, result)
+	}
+}
+
+// The overview path is the one place a partial total used to be thrown away and
+// replaced by a second, much slower measurement of the same tree.
+func TestOverviewMeasurementKeepsPartialDuResult(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, "root")
+	writeFileWithSize(t, filepath.Join(root, "readable"), 4096)
+
+	stubDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stubDir, "du"), []byte("#!/bin/sh\nprintf '8\tpartial\\n'\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write du stub: %v", err)
+	}
+	t.Setenv("PATH", stubDir)
+
+	size, err := measureOverviewSize(context.Background(), root)
+	if size != 8192 {
+		t.Fatalf("overview dropped the partial du total: size=%d err=%v", size, err)
+	}
+	if err == nil {
+		t.Fatal("a partial overview total must not be reported as complete")
+	}
+	if got := measurementState(size, err); got != scanPartial {
+		t.Fatalf("expected a partial classification, got %s", got)
+	}
+
+	// A cached overview number carries no coverage marker, so a partial total
+	// must never overwrite the complete snapshot that is already on disk.
+	if cached, cacheErr := loadOverviewCachedSize(root); cacheErr == nil && cached == 8192 {
+		t.Fatal("partial overview total was published as a complete cache entry")
+	}
+
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := measureOverviewSize(cancelCtx, root); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation was not propagated through the measurement helpers: %v", err)
+	}
+}
+
+// The fallback walk is only reached when du produced nothing usable, so it has
+// to report its own gaps instead of returning a quietly smaller total.
+func TestLogicalSizeFallbackReportsItsOwnGaps(t *testing.T) {
+	root := t.TempDir()
+	writeFileWithSize(t, filepath.Join(root, "readable"), 4096)
+
+	total, err := getDirectoryLogicalSizeWithExclude(context.Background(), root, "", nil)
+	if err != nil {
+		t.Fatalf("clean fallback walk failed: %v", err)
+	}
+	if got := measurementState(total, nil); got != scanComplete {
+		t.Fatalf("a walk over a readable tree must classify as complete, got %s", got)
+	}
+
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := getDirectoryLogicalSizeWithExclude(cancelCtx, root, "", nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("the fallback walk ignored its deadline: %v", err)
+	}
+}
+
+// The Downloads insight used to measure directories with its own du call that
+// dropped every failure. It now shares the overview runner, so a partial read is
+// reported instead of silently shrinking the total.
+func TestOldDownloadsReportsPartialMeasurement(t *testing.T) {
+	dir := t.TempDir()
+	old := time.Now().AddDate(0, 0, -120)
+	subdir := filepath.Join(dir, "old-dir")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Chtimes(subdir, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	stubDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stubDir, "du"), []byte("#!/bin/sh\nprintf '8\tpartial\\n'\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write du stub: %v", err)
+	}
+	t.Setenv("PATH", stubDir)
+
+	size, err := measureOldDownloads(context.Background(), dir, 90)
+	if size != 8192 {
+		t.Fatalf("the Downloads insight dropped the partial du total: size=%d err=%v", size, err)
+	}
+	if err == nil {
+		t.Fatal("a partial Downloads measurement must not be reported as complete")
+	}
+	if got := measurementState(size, err); got != scanPartial {
+		t.Fatalf("expected a partial classification, got %s", got)
 	}
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"sync/atomic"
@@ -422,7 +423,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case overviewSizeMsg:
 		delete(m.overviewScanningSet, msg.Path)
 
-		if msg.Err == nil {
+		// A measurement that stopped part-way still carries the bytes it read.
+		// Showing them beats showing nothing, and the marker that separates a
+		// partial total from a complete one arrives with A-3/A-4.
+		measured := msg.Err == nil || msg.Size > 0
+		if measured {
 			if m.overviewSizeCache == nil {
 				m.overviewSizeCache = make(map[string]int64)
 			}
@@ -432,7 +437,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.inOverviewMode() {
 			for i := range m.entries {
 				if m.entries[i].Path == msg.Path {
-					if msg.Err == nil {
+					if measured {
 						m.entries[i].Size = msg.Size
 					} else {
 						m.entries[i].Size = 0
@@ -442,7 +447,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.totalSize = sumKnownEntrySizes(m.entries)
 
-			if msg.Err != nil {
+			if msg.Err != nil && !measured {
 				m.status = fmt.Sprintf("Unable to measure %s: %v", displayPath(msg.Path), msg.Err)
 			}
 
@@ -925,7 +930,7 @@ func (m model) enterSelectedDir() (tea.Model, tea.Cmd) {
 
 func scanOverviewPathCmd(path string, index int) tea.Cmd {
 	return func() tea.Msg {
-		size, err := measureInsightSize(path)
+		size, err := measureInsightSize(context.Background(), path)
 		return overviewSizeMsg{
 			Path:  path,
 			Index: index,

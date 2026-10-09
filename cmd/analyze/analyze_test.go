@@ -2118,6 +2118,46 @@ func TestOverviewRefillsKeepOneTickLoop(t *testing.T) {
 	}
 }
 
+// An overview row measured part-way must keep showing its bytes: discarding them
+// made a partially readable root look like a failed one. The coverage marker that
+// labels it arrives with A-3/A-4.
+func TestOverviewPartialMeasurementStillShowsItsBytes(t *testing.T) {
+	m := newTickLoopTestModel(t, true)
+
+	updated, _ := m.Update(overviewSizeMsg{
+		Path:  m.entries[0].Path,
+		Index: 0,
+		Size:  8192,
+		Err:   errors.New("du incomplete: permission denied"),
+	})
+	partial, ok := updated.(model)
+	if !ok {
+		t.Fatalf("expected model, got %T", updated)
+	}
+	if partial.entries[0].Size != 8192 {
+		t.Fatalf("partial measurement was discarded: got %d, want 8192", partial.entries[0].Size)
+	}
+	if partial.overviewSizeCache[m.entries[0].Path] != 8192 {
+		t.Fatal("partial measurement was not kept for the session")
+	}
+	if strings.Contains(partial.status, "Unable to measure") {
+		t.Fatalf("a row that produced bytes must not read as a failed row: %q", partial.status)
+	}
+
+	// A measurement that produced nothing must still report the failure.
+	updated, _ = m.Update(overviewSizeMsg{Path: m.entries[1].Path, Index: 1, Size: 0, Err: errors.New("cannot access path")})
+	failed, ok := updated.(model)
+	if !ok {
+		t.Fatalf("expected model, got %T", updated)
+	}
+	if !strings.Contains(failed.status, "Unable to measure") {
+		t.Fatalf("a measurement with no bytes must still surface its error, status=%q", failed.status)
+	}
+	if failed.entries[1].Size != 0 {
+		t.Fatalf("expected the failed row to reset, got %d", failed.entries[1].Size)
+	}
+}
+
 func TestOverviewHomeNavigationRendersImmediateRows(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -2951,7 +2991,7 @@ func TestMeasureOverviewSize(t *testing.T) {
 		t.Fatalf("write file: %v", err)
 	}
 
-	size, err := measureOverviewSize(target)
+	size, err := measureOverviewSize(context.Background(), target)
 	if err != nil {
 		t.Fatalf("measureOverviewSize: %v", err)
 	}
@@ -2974,7 +3014,7 @@ func TestMeasureOverviewSize(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(target, "data2.bin"), content, 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
-	size2, err := measureOverviewSize(target)
+	size2, err := measureOverviewSize(context.Background(), target)
 	if err != nil {
 		t.Fatalf("measureOverviewSize: %v", err)
 	}
