@@ -190,16 +190,16 @@ go test ./cmd/analyze ./cmd/status
 
 ### Upstream Commits Since Fork (Analysis)
 
-As of the latest check, upstream has **134 commits** affecting `cmd/analyze/` and `cmd/status/` since the fork point `b56f7561`. Upstream has moved far ahead and rewrote history, so the hashes referenced below are **stale** — re-derive candidates from `git log b56f7561..upstream/main -- cmd/analyze/ cmd/status/` against current upstream before porting.
+As of the 2026-10-09 check (`upstream/main` = `2e8ea7f3`, tag `V1.58.0`), upstream has **151 commits** affecting `cmd/analyze/` and `cmd/status/` since the fork point `b56f7561`, and **0 open PRs**. Upstream has moved far ahead, so re-derive candidates from `git log b56f7561..upstream/main -- cmd/analyze/ cmd/status/` against current upstream before porting — the hashes in the older tables below may predate a history rewrite.
 
 The live, prioritized backlog lives in **[TODO.md](TODO.md)**; this table is a summary only:
 
 | Category | Count | Action |
 |----------|-------|--------|
-| Already ported by dua | 5 (A-layer, branch `port/a-layer-upstream`) | N/A |
+| Already ported by dua | 8 (A-layer + UI/UX batch, branch `port/a-layer-upstream`) | N/A |
 | Partial-coverage chain (analyze) | ~13 | **NEXT** — port as a unit |
 | Status stale-process / snapshot / health / locale / CPU card | ~15 | **REVIEW** |
-| UI/UX (pending overview animation, spinner UTF-8) | ~5 | **REVIEW** |
+| UI/UX (remaining: pending-row size alignment) | 1 | **REVIEW** |
 | Mole-specific (cleanup/uninstall/Trash/battery/OrbStack/Claude) | ~90 | **SKIP** |
 
 #### Potentially Useful Commits (Review Needed)
@@ -209,7 +209,7 @@ Categories worth reviewing (full hashes and ordering in [TODO.md](TODO.md)); the
 - **Partial-coverage chain (analyze)** — `cf6165b2`…`53c4d362` (13 commits): keep partial du measurements and incomplete-size markers visible, carry coverage through live scan events, expose coverage in JSON, preserve child caches. **Port as one unit; the next batch.**
 - **Status stale-process** — `390294d5` mark stale process data in the TUI, `eb20146b` retain stale process samples.
 - **Analyze snapshot** — `a6d59d49` reject stale snapshot probes, `03311d45` refresh local snapshot count, `e9f52994` surface local snapshot space.
-- **UI/UX** — `99a9471d` align pending overview sizes, `d534c30b` animate pending overview rows, `8a2b84b1` keep braille spinner frames UTF-8 safe.
+- **UI/UX** — ported on 2026-10-09: `7d08959d` compact 2x2 spinner glyphs, `6aa93263` + `19f14e40` one animation loop per analyze session. Still open: `99a9471d` align pending overview sizes (the sizes-side half of the pair that `d534c30b`/`6aa93263` replaced). `8a2b84b1` is a no-op here — it re-encodes `lib/core/ui.sh`, which dua does not have.
 - **Status health/locale/CPU card** — `4ee83df7`/`825ef91b`/`cd95c912` health diagnosis, `bfbe240d` `--watch` NDJSON, `afc83fc5`/`b5fc149a` C locale, `4cbab499`/`00a42fd9` CPU card.
 - **Analyze cache robustness** — `0dc42987`/`744e3a34` bound cache growth, `194bdd8c` prune expired cache, `6127d79c` serialize cache publication.
 - **Performance:** scan cancellation improvements are mostly already ported by dua.
@@ -218,12 +218,14 @@ Categories worth reviewing (full hashes and ordering in [TODO.md](TODO.md)); the
 
 | Date | Category | Commits | Decision | Reason |
 |------|----------|---------|----------|--------|
-| 2026-10-04 | A-layer: CLI help, spinner, status network/JSON, overview perf | `55d62acd`, `a9529a0f`, `b5608780`, `a4593718`, `676829c8` | **PORTED** | Self-contained, Linux-relevant fixes. Ported as a batch on branch `port/a-layer-upstream`; `make check` green; both binaries verified running. |
+| 2026-10-04 | A-layer: CLI help, status network/JSON, overview perf | dua `55d62acd`, `a9529a0f`, `b5608780`, `a4593718`, `676829c8` | **PORTED** | Self-contained, Linux-relevant fixes. Ported as a batch on branch `port/a-layer-upstream`; `make check` green; both binaries verified running. |
+| 2026-10-09 | Correction of the A-layer mapping (see note below) | upstream `4e4646b2`, `4f7d853a`, `1a1c7300`, `f2527b02`, `a6f37ec1`, `7d08959d` | **DOC FIX** | The 2026-10-04 row listed **dua** hashes as if they were upstream ones. Actual mapping: `676829c8` ← `a6f37ec1`; `b5608780` ← `1a1c7300` + test `f2527b02` (upstream changed `mo-applets/metrics.go`, dua ported it into `cmd/status/metrics_network.go`); `4f7d853a` (`status --json` without a TTY) was **already** in dua; `55d62acd` (router help) and `a9529a0f`/`a4593718` have **no upstream twin** — the former is dua-router-only, the latter two were written against an upstream history that no longer contains them. |
+| 2026-10-09 | UI/UX: spinner glyph set + single animation loop | dua `9952bdde`, `e2994ff1` ← upstream `7d08959d`, `6aa93263`, `19f14e40` | **PORTED** | `d534c30b` is superseded by `6aa93263`/`19f14e40` (upstream reverted the dual-loop approach), so it is not ported. `startTick` + `tickRunning` guard, `Init` → `initializeMsg` handoff. Ported upstream's `scheduledTickCount`-based regression tests, adapted to dua's model; `make check` green; TUI smoke-tested through a pty. |
 | 2025-08-28 | A: Status stale-process | `390294d5`, `eb20146b` (+ older hashes `b3dc7f31`…`455e6627` now stale) | **REVIEW** | Smaller/self-contained than the original A set; re-check against current upstream before porting. |
 | 2025-08-28 | B: Analyze snapshot | `a6d59d49`, `03311d45`, `e9f52994` (+ older hashes `a300f00c`…`608d5d04` now stale) | **REVIEW** | May depend on snapshot infra; verify self-containment against current HEAD. |
-| 2025-08-28 | C: UI/UX | `99a9471d`, `d534c30b`, `8a2b84b1` (+ older hashes `785b84c4`…`1e0d23c9` now stale) | **REVIEW LATER** | Low priority, needs TUI compatibility check. |
+| 2025-08-28 | C: UI/UX | `99a9471d`, `d534c30b`, `8a2b84b1` (+ older hashes `785b84c4`…`1e0d23c9` now stale) | **PARTLY PORTED 2026-10-09** | `d534c30b` superseded upstream by `6aa93263`/`19f14e40`, both ported; `8a2b84b1` is a no-op for dua (bash `lib/core/ui.sh`). Only `99a9471d` remains. |
 
-**Current policy**: Prefer small, self-contained, Linux-relevant fixes ported as a batch on a feature branch (never directly to `main`). The partial-coverage chain is the next batch. Re-derive all upstream hashes from current `upstream/main` before porting — history moved past the fork base and the hashes above this section are stale.
+**Current policy**: Prefer small, self-contained, Linux-relevant fixes ported as a batch on a feature branch (never directly to `main`). The partial-coverage chain is the next batch. Re-derive all upstream hashes from current `upstream/main` before porting, and record the **upstream** hash next to the dua commit that ports it — the 2026-10-09 correction above shows what happens when only local hashes are logged. When an upstream change touches `mo-applets/`, port the equivalent into `cmd/analyze/` / `cmd/status/` instead of skipping it: the two trees diverged, so the upstream path is not the porting target.
 
 ### Decision Checklist for Cherry-picking
 
