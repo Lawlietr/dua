@@ -77,6 +77,7 @@ cp bin/dua-analyze bin/dua-status /usr/local/bin/
 - 帶 `PATH`：掃描該目錄。
 - 按鍵：`↑↓←→` 導覽、`Enter` 下鑽、`Esc` 返回、`R` 重新整理、`/` 過濾、`T` Top 檔案、`O` 用 `xdg-open` 開啟、`P` 預覽、`F` 在檔案管理員中顯示、`Q`/`Ctrl+C` 離開。
 - 旗標：`--json` 以 JSON 輸出掃描結果。
+- 涵蓋範圍：JSON 輸出在文件層與每個條目都帶有 `scan_status`（`complete`、`partial`、`unavailable`），因此跳過不可讀子樹的 `total_size` 會被理解為下限，而非總值。
 
 環境變數：`DUA_ANALYZE_PATH` 在未指定 PATH 時設定掃描目標；`DUA_ANALYZE_LIVE_SORT` 選擇即時掃描排序模式。
 

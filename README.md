@@ -77,6 +77,7 @@ cp bin/dua-analyze bin/dua-status /usr/local/bin/
 - `PATH`: scans that directory.
 - Keys: `↑↓←→` navigate, `Enter` drill in, `Esc` back, `R` refresh, `/` filter, `T` Top files, `O` open with `xdg-open`, `P` preview, `F` reveal in file manager, `Q`/`Ctrl+C` quit.
 - Flags: `--json` prints the scan result as JSON.
+- Coverage: the JSON output carries `scan_status` (`complete`, `partial`, `unavailable`) on the document and on each entry, so a `total_size` that skipped an unreadable subtree reads as a lower bound instead of a total.
 
 Environment: `DUA_ANALYZE_PATH` sets the scan target when no PATH is given; `DUA_ANALYZE_LIVE_SORT` selects the live-scan sort mode.
 
