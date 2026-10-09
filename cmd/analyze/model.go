@@ -36,9 +36,6 @@ func (s scanState) String() string {
 // a partial measurement is only partial because some bytes were measured, and
 // reporting it as complete would let the TUI and the cache present an
 // under-counted directory as if the subtree were fully known.
-//
-// Not wired into scan results or the model yet - that happens together with the
-// scanner and cache halves of the upstream chain (see TODO.md cards A-2/A-3).
 func measurementState(size int64, err error) scanState {
 	if err == nil {
 		return scanComplete
@@ -114,6 +111,7 @@ type scanResultMsg struct {
 }
 
 type liveScanStartMsg struct {
+	state         scanState
 	id            int64
 	path          string
 	entries       []dirEntry

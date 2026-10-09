@@ -1363,7 +1363,8 @@ func TestLiveScanIncludesParallelsVMStorageButKeepsOtherVirtualizationSkips(t *t
 		}
 	}
 
-	entries, targets, _, _, _, err := readLiveScanInitialEntries(root, nil)
+	initial, targets, err := readLiveScanInitialEntries(root, nil)
+	entries := initial.Entries
 	if err != nil {
 		t.Fatalf("read live scan entries: %v", err)
 	}
@@ -3837,4 +3838,128 @@ func TestCacheKeepsCoverageContract(t *testing.T) {
 	if cached.Entries[0].State != scanPartial {
 		t.Fatalf("a cached row's coverage must survive the round-trip: got %s", cached.Entries[0].State)
 	}
+}
+
+// A directory the scan cannot read must stay in the result as an unavailable row
+// and must make the total a lower bound. Dropping it would hide the gap: the row
+// is the only place where "this subtree was not measured" is visible.
+func TestLiveScanKeepsUnavailableDirectoryAndPartialTotal(t *testing.T) {
+	skipIfRoot(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, "root")
+	locked := filepath.Join(root, "locked")
+	readable := filepath.Join(root, "readable")
+	writeFileWithSize(t, readable, 4096)
+	writeFileWithSize(t, filepath.Join(locked, "hidden"), 1<<20)
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	// The expected total is what this filesystem reports for the readable file,
+	// not a hard-coded byte count: sizes here go through st_blocks, and container
+	// filesystems under-report it (see skipIfBlockAccountingUnreliable). The point
+	// of the test is that the readable bytes survive the unreadable directory,
+	// not how many blocks this machine allocates.
+	info, err := os.Stat(readable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := getActualFileSize(readable, info)
+	if want <= 0 {
+		t.Fatalf("fixture produced no measurable bytes for %s", readable)
+	}
+	var files, dirs, bytes int64
+	current := &atomic.Value{}
+	current.Store("")
+	msg := runScanResultCmd(t, startLiveScanCmd(root, &files, &dirs, &bytes, current))
+	if msg.err != nil {
+		t.Fatalf("live scan failed: %+v", msg.err)
+	}
+	if msg.result.State != scanPartial {
+		t.Fatalf("total must be a lower bound when a directory was not readable, got state=%s total=%d", msg.result.State, msg.result.TotalSize)
+	}
+	if msg.result.TotalSize != want {
+		t.Fatalf("partial total must keep the readable bytes (%d), got %d", want, msg.result.TotalSize)
+	}
+	for _, entry := range msg.result.Entries {
+		if entry.Path == locked {
+			if entry.State != scanUnavailable || entry.Size != 0 {
+				t.Fatalf("unavailable entry: %+v", entry)
+			}
+			return
+		}
+	}
+	t.Fatal("live scan omitted unreadable directory")
+}
+
+// A directory that cannot be scanned at all - here, one removed after the listing
+// was taken - must stay in the result as an unscanned row and leave the total as
+// a lower bound. Silently dropping it would present an under-counted listing as
+// if the whole tree had been measured.
+func TestLiveScanKeepsRowWhenTargetCannotBeScanned(t *testing.T) {
+	root := t.TempDir()
+	gone := filepath.Join(root, "gone")
+	if err := os.MkdirAll(filepath.Join(gone, "inner"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFileWithSize(t, filepath.Join(root, "keep"), 2048)
+
+	initial, targets, err := readLiveScanInitialEntries(root, nil)
+	if err != nil {
+		t.Fatalf("read live scan entries: %v", err)
+	}
+	targetFound := false
+	for _, target := range targets {
+		if target.path == gone {
+			targetFound = true
+		}
+	}
+	if !targetFound {
+		t.Fatalf("fixture produced no scan target for %s", gone)
+	}
+	if err := os.RemoveAll(gone); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancelContext := context.WithCancel(context.Background())
+	defer cancelContext()
+	publication := newScanPublication(ctx, cancelContext)
+	defer publication.cancel()
+	stream := newLiveScanEventStream(publication, len(targets))
+	currentPath := &atomic.Value{}
+	currentPath.Store("")
+	var files, dirs, bytes int64
+	go runLiveScan(ctx, 1, root, initial, targets, newScanLimiter(1), &files, &dirs, &bytes, currentPath, stream, scanCacheReuse)
+
+	var result scanResult
+	completed := false
+	deadline := time.After(5 * time.Second)
+	for !completed {
+		select {
+		case event, ok := <-stream.events:
+			if !ok {
+				t.Fatal("live scan event channel closed without completion")
+			}
+			if event.kind == liveScanComplete {
+				result = event.result
+				completed = true
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for live scan completion")
+		}
+	}
+
+	if result.State == scanComplete {
+		t.Fatalf("a scan with an unscannable directory must not report a complete total, got %s", result.State)
+	}
+	for _, entry := range result.Entries {
+		if entry.Path == gone {
+			if entry.State == scanComplete {
+				t.Fatalf("unscannable row must not look measured: %+v", entry)
+			}
+			return
+		}
+	}
+	t.Fatal("live scan dropped a directory it could not scan")
 }

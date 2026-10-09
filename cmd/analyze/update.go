@@ -394,7 +394,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.entriesAll = slices.Clone(msg.entries)
 		m.largeFilesAll = slices.Clone(msg.largeFiles)
 		m.totalSize = msg.totalSize
-		m.scanState = entryScanState(msg.entries)
+		// The listing carries coverage that the entry list cannot show: a child the
+		// scan could not stat produced no row at all, so entries alone cannot reveal
+		// the gap. Take whichever signal is worse.
+		m.scanState = msg.state
+		if entryState := entryScanState(msg.entries); entryState > m.scanState {
+			m.scanState = entryState
+		}
 		m.totalFiles = msg.totalFiles
 		m.viewNeedsRefresh = false
 		m.scanning = true
