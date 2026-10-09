@@ -62,15 +62,16 @@ func (m *model) scheduleOverviewScans() tea.Cmd {
 		}
 	}
 
-	cmds = append(cmds, tickCmd())
+	cmds = append(cmds, m.startTick())
 	return tea.Batch(cmds...)
 }
 
 func (m model) Init() tea.Cmd {
-	if m.inOverviewMode() {
-		return m.scheduleOverviewScans()
+	// Init receives a copy. Start work through Update so the running model
+	// retains the tick guard before any scan completion can refill the queue.
+	return func() tea.Msg {
+		return initializeMsg{}
 	}
-	return tea.Batch(m.scanCmd(m.path), tickCmd())
 }
 
 func (m model) scanCmd(path string) tea.Cmd {
@@ -118,6 +119,18 @@ func tickCmd() tea.Cmd {
 	return tea.Tick(uiTickInterval, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
+}
+
+// startTick arms the animation loop only when none is running. Each loop
+// re-arms itself while work remains, so a second one would double the
+// spinner speed. Every scan, navigation, and refresh entry point shares
+// this guard, including overview refills before the first tick arrives.
+func (m *model) startTick() tea.Cmd {
+	if m.tickRunning {
+		return nil
+	}
+	m.tickRunning = true
+	return tickCmd()
 }
 
 func (m *model) cancelLiveScan() {
@@ -278,6 +291,11 @@ func (m *model) selectEntryPath(path string) {
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case initializeMsg:
+		if m.inOverviewMode() {
+			return m, m.scheduleOverviewScans()
+		}
+		return m, tea.Batch(m.scanCmd(m.path), m.startTick())
 	case tea.KeyMsg:
 		return m.updateKey(msg)
 	case tea.WindowSizeMsg:
@@ -337,7 +355,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.currentPath != nil {
 				m.currentPath.Store("")
 			}
-			return m, tea.Batch(m.scanFreshCmd(m.path), tickCmd())
+			return m, tea.Batch(m.scanFreshCmd(m.path), m.startTick())
 		}
 
 		m.status = fmt.Sprintf("Scanned %s", humanizeBytes(m.totalSize))
@@ -444,8 +462,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.scanning || (m.inOverviewMode() && (m.overviewScanning || hasPending)) {
 			m.spinner = (m.spinner + 1) % len(spinnerFrames)
+			m.tickRunning = true
 			return m, tickCmd()
 		}
+		m.tickRunning = false
 		return m, nil
 	default:
 		return m, nil
@@ -556,7 +576,7 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 			m.status = "Refreshing..."
 			m.overviewScanning = true
-			return m, tea.Batch(m.scheduleOverviewScans(), tickCmd())
+			return m, m.scheduleOverviewScans()
 		}
 
 		invalidateCacheTree(m.path)
@@ -571,7 +591,7 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.currentPath != nil {
 			m.currentPath.Store("")
 		}
-		return m, tea.Batch(m.scanBypassingCacheCmd(m.path), tickCmd())
+		return m, tea.Batch(m.scanBypassingCacheCmd(m.path), m.startTick())
 	case "t", "T":
 		if m.scanning {
 			m.status = "Top files are available after the scan finishes"
@@ -792,7 +812,7 @@ func (m model) goBack() (tea.Model, tea.Cmd) {
 		if m.currentPath != nil {
 			m.currentPath.Store("")
 		}
-		return m, tea.Batch(m.scanFreshCmd(m.path), tickCmd())
+		return m, tea.Batch(m.scanFreshCmd(m.path), m.startTick())
 	}
 	m.status = fmt.Sprintf("Scanned %s", humanizeBytes(m.totalSize))
 	m.scanning = false
@@ -819,12 +839,12 @@ func (m *model) switchToOverviewMode() tea.Cmd {
 	if cmd == nil {
 		if m.overviewScanning {
 			m.status = "Checking system folders..."
-			return tickCmd()
+			return m.startTick()
 		}
 		m.status = "Ready"
 		return nil
 	}
-	return tea.Batch(cmd, tickCmd())
+	return tea.Batch(cmd, m.startTick())
 }
 
 func (m model) enterSelectedDir() (tea.Model, tea.Cmd) {
@@ -887,7 +907,7 @@ func (m model) enterSelectedDir() (tea.Model, tea.Cmd) {
 				if m.totalFiles > 0 {
 					m.lastTotalFiles = m.totalFiles
 				}
-				return m, tea.Batch(m.scanFreshCmd(m.path), tickCmd())
+				return m, tea.Batch(m.scanFreshCmd(m.path), m.startTick())
 			}
 			m.status = fmt.Sprintf("Cached view for %s", displayPath(m.path))
 			m.scanning = false
@@ -897,7 +917,7 @@ func (m model) enterSelectedDir() (tea.Model, tea.Cmd) {
 		if total, err := peekCacheTotalFiles(m.path); err == nil && total > 0 {
 			m.lastTotalFiles = total
 		}
-		return m, tea.Batch(m.scanCmd(m.path), tickCmd())
+		return m, tea.Batch(m.scanCmd(m.path), m.startTick())
 	}
 	m.status = fmt.Sprintf("File: %s, %s", selected.Name, humanizeBytes(selected.Size))
 	return m, nil

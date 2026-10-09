@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -1967,6 +1968,153 @@ func TestLiveScanStartDoesNotAddSecondSpinnerTick(t *testing.T) {
 	}
 	if _, ok := cmd().(tickMsg); ok {
 		t.Fatalf("live scan start must not schedule an extra spinner tick")
+	}
+}
+
+// scheduledTickCount inspects a dispatched command without running its scan
+// work: tea.Batch only yields the sub-commands, it does not invoke them. The
+// positive control below pins Bubble Tea's tick and batch command identities.
+func scheduledTickCount(t *testing.T, cmd tea.Cmd) int {
+	t.Helper()
+	if cmd == nil {
+		return 0
+	}
+	name := runtime.FuncForPC(reflect.ValueOf(cmd).Pointer()).Name()
+	if strings.Contains(name, ".Tick.") {
+		return 1
+	}
+	if strings.Contains(name, ".compactCmds[") {
+		batch, ok := cmd().(tea.BatchMsg)
+		if !ok {
+			t.Fatalf("batch command returned an unexpected message: %s", name)
+		}
+		count := 0
+		for _, sub := range batch {
+			count += scheduledTickCount(t, sub)
+		}
+		return count
+	}
+	return 0
+}
+
+// newTickLoopTestModel builds a model with pending overview rows only, so the
+// animation guard can be observed without touching real disk trees.
+func newTickLoopTestModel(t *testing.T, overview bool) model {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	resetOverviewSnapshotForTest()
+	t.Cleanup(resetOverviewSnapshotForTest)
+	m := newModel(t.TempDir(), false)
+	m.isOverview = overview
+	if overview {
+		m.path = "/"
+	}
+	m.scanning = !overview
+	for i := range maxConcurrentOverview {
+		m.entries = append(m.entries, dirEntry{
+			Name:  fmt.Sprintf("fixture-%d", i),
+			Path:  filepath.Join(os.Getenv("HOME"), fmt.Sprintf("missing-%d", i)),
+			IsDir: true,
+			Size:  -1,
+		})
+	}
+	return m
+}
+
+func TestInitArmsOneTickLoop(t *testing.T) {
+	if got := scheduledTickCount(t, tea.Batch(tickCmd(), tea.Batch(tickCmd(), nil))); got != 2 {
+		t.Fatalf("tick counter positive control = %d, want 2", got)
+	}
+
+	for _, overview := range []bool{false, true} {
+		t.Run(fmt.Sprintf("overview=%t", overview), func(t *testing.T) {
+			m := newTickLoopTestModel(t, overview)
+			msg := m.Init()()
+			if _, ok := msg.(initializeMsg); !ok {
+				t.Fatalf("Init must hand its work to Update, got %T", msg)
+			}
+			updated, cmd := m.Update(msg)
+			m = updated.(model)
+			if got := scheduledTickCount(t, cmd); got != 1 || !m.tickRunning {
+				t.Fatalf("initial ticks=%d, retained running=%t; want one retained loop", got, m.tickRunning)
+			}
+		})
+	}
+}
+
+func TestScanEntryPointsShareOneTickLoop(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(*model)
+		msg   tea.Msg
+	}{
+		{"overview refresh", func(m *model) { m.isOverview, m.path = true, "/" }, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}}},
+		{"directory refresh", func(m *model) { m.isOverview = false }, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}}},
+		{"back to overview", func(m *model) { m.isOverview = false }, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}}},
+		{"drill into folder", func(m *model) { m.isOverview = false }, tea.KeyMsg{Type: tea.KeyEnter}},
+	}
+	for _, tc := range cases {
+		for _, running := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s running=%t", tc.name, running), func(t *testing.T) {
+				m := newTickLoopTestModel(t, false)
+				tc.setup(&m)
+				m.tickRunning = running
+				updated, cmd := m.Update(tc.msg)
+				m = updated.(model)
+				want := 1
+				if running {
+					want = 0
+				}
+				if got := scheduledTickCount(t, cmd); got != want || !m.tickRunning {
+					t.Fatalf("new ticks=%d, running=%t; want %d new ticks and running=true", got, m.tickRunning, want)
+				}
+			})
+		}
+	}
+}
+
+func TestTickLoopStopsAndRestarts(t *testing.T) {
+	m := newTickLoopTestModel(t, false)
+	m.scanning = true
+	m.tickRunning = true
+
+	updated, cmd := m.Update(tickMsg{})
+	m = updated.(model)
+	if got := scheduledTickCount(t, cmd); got != 1 || !m.tickRunning {
+		t.Fatalf("active scan re-arm=%d ticks, running=%t; want the loop to continue", got, m.tickRunning)
+	}
+
+	m.scanning = false
+	updated, cmd = m.Update(tickMsg{})
+	m = updated.(model)
+	if cmd != nil {
+		t.Fatalf("idle model scheduled %d tick loops, want the chain to stop", scheduledTickCount(t, cmd))
+	}
+	if m.tickRunning {
+		t.Fatal("idle model must release the tick guard")
+	}
+
+	if got := scheduledTickCount(t, m.startTick()); got != 1 {
+		t.Fatalf("re-arm after idle = %d ticks, want 1", got)
+	}
+	if got := scheduledTickCount(t, m.startTick()); got != 0 {
+		t.Fatalf("second arm while running = %d ticks, want 0", got)
+	}
+}
+
+func TestOverviewRefillsKeepOneTickLoop(t *testing.T) {
+	m := newTickLoopTestModel(t, true)
+	if got := scheduledTickCount(t, m.scheduleOverviewScans()); got != 1 {
+		t.Fatalf("initial dispatch started %d tick loops, want 1", got)
+	}
+	// Each completion refills one slot. The running loop already keeps the
+	// spinner moving, so a refill must not add a loop per finished row.
+	for i := range 4 {
+		m.entries[i].Size = 1
+		delete(m.overviewScanningSet, m.entries[i].Path)
+		if got := scheduledTickCount(t, m.scheduleOverviewScans()); got != 0 {
+			t.Fatalf("refill %d started %d extra tick loops", i+1, got)
+		}
 	}
 }
 
