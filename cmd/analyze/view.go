@@ -43,7 +43,7 @@ func (m model) View() string {
 	} else {
 		fmt.Fprintf(&b, "%sAnalyze Disk%s  %s%s%s", colorPurpleBold, colorReset, colorGray, displayPath(m.path), colorReset)
 		if !m.scanning || m.totalSize > 0 {
-			fmt.Fprintf(&b, "  |  Total: %s", humanizeBytes(m.totalSize))
+			fmt.Fprintf(&b, "  |  Total: %s", measuredSizeLabel(m.totalSize, m.scanState))
 		}
 		fmt.Fprintf(&b, "\n\n")
 	}
@@ -181,9 +181,11 @@ func (m model) View() string {
 				displayNum := 0
 				for idx, entry := range m.entries {
 					sizeVal := entry.Size
-					// Hide entries that have been scanned and are empty (standard dirs
-					// are never 0 bytes; only insight dirs in unused tool paths are).
-					if sizeVal == 0 {
+					// Hide entries that were measured and came back empty (standard
+					// dirs are never 0 bytes; only insight dirs in unused tool paths
+					// are). A row that could not be measured stays: it is the only
+					// visible marker of the gap in this list.
+					if sizeVal == 0 && entry.State == scanComplete {
 						continue
 					}
 					barValue := max(sizeVal, 0)
@@ -193,7 +195,12 @@ func (m model) View() string {
 					} else {
 						percent = 0
 					}
-					percentStr := formatPercent(percent, totalSize > 0 && sizeVal >= 0)
+					// A row that was only partly measured, or not measured at all,
+					// has no trustworthy share of the total. The rows around it do:
+					// blanking the whole list because one root is unreadable would
+					// read as a broken screen, and the header already carries the
+					// lower-bound marker for the total.
+					percentStr := formatPercent(percent, totalSize > 0 && sizeVal >= 0 && entry.State == scanComplete)
 					bar := coloredProgressBar(barValue, maxSize, percent)
 					// Pending rows reuse the list view's scanning idiom: the
 					// animated spinner keeps the row visibly alive, and the
@@ -202,7 +209,7 @@ func (m model) View() string {
 					sizeText := fmt.Sprintf("%s scanning", spinnerFrames[m.spinner])
 					sizeColor := colorCyan
 					if sizeVal >= 0 {
-						sizeText = humanizeBytes(sizeVal)
+						sizeText = measuredSizeLabel(sizeVal, entry.State)
 						sizeColor = colorGray
 						if totalSize > 0 {
 							sizeColor = sizeColorForPercent(percent)
@@ -263,12 +270,12 @@ func (m model) View() string {
 					if m.totalSize > 0 && entry.Size >= 0 {
 						percent = float64(entry.Size) / float64(m.totalSize) * 100
 					}
-					percentStr := formatPercent(percent, entry.Size >= 0 && m.totalSize > 0)
+					percentStr := formatPercent(percent, entry.Size >= 0 && m.totalSize > 0 && entry.State == scanComplete)
 
 					bar := coloredProgressBar(sizeValue, maxSize, percent)
 
 					sizeColor := sizeColorForPercent(percent)
-					size := humanizeBytes(entry.Size)
+					size := measuredSizeLabel(entry.Size, entry.State)
 					if entry.Size < 0 {
 						size = fmt.Sprintf("%s %s", spinnerFrames[m.spinner], "scanning")
 						sizeColor = colorCyan

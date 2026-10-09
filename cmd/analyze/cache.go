@@ -24,7 +24,9 @@ import (
 // stale on-disk cache entries are rejected instead of silently reused.
 // v2: analyze deduplicates hardlinked files to match `du`.
 // v3: ordinary Parallels VM storage is included instead of skipped by name.
-const cacheSchemaVersion = 3
+// v4: an incomplete scan is no longer an authoritative measurement, so cached
+// totals written without coverage information are rejected.
+const cacheSchemaVersion = 4
 
 type overviewSizeSnapshot struct {
 	Size          int64     `json:"size"`
@@ -40,6 +42,7 @@ var (
 
 func snapshotFromModel(m model) historyEntry {
 	return historyEntry{
+		State:         m.scanState,
 		Path:          m.path,
 		Entries:       slices.Clone(m.entries),
 		LargeFiles:    slices.Clone(m.largeFiles),
@@ -49,7 +52,7 @@ func snapshotFromModel(m model) historyEntry {
 		EntryOffset:   m.offset,
 		LargeSelected: m.largeSelected,
 		LargeOffset:   m.largeOffset,
-		NeedsRefresh:  m.viewNeedsRefresh || m.scanning,
+		NeedsRefresh:  m.viewNeedsRefresh || m.scanning || m.scanState != scanComplete,
 		IsOverview:    m.isOverview,
 	}
 }
@@ -57,7 +60,9 @@ func snapshotFromModel(m model) historyEntry {
 func filterNonEmptyEntries(entries []dirEntry) []dirEntry {
 	filtered := make([]dirEntry, 0, len(entries))
 	for _, entry := range entries {
-		if entry.Size > 0 {
+		// A row that could not be fully measured must stay visible: dropping it
+		// would hide the only evidence that the scan was incomplete.
+		if entry.Size > 0 || entry.State != scanComplete {
 			filtered = append(filtered, entry)
 		}
 	}
@@ -66,6 +71,7 @@ func filterNonEmptyEntries(entries []dirEntry) []dirEntry {
 
 func historyEntryFromScanResult(path string, result scanResult, previous historyEntry, needsRefresh bool) historyEntry {
 	entry := historyEntry{
+		State:         result.State,
 		Path:          path,
 		Entries:       slices.Clone(result.Entries),
 		LargeFiles:    slices.Clone(result.LargeFiles),
@@ -75,7 +81,7 @@ func historyEntryFromScanResult(path string, result scanResult, previous history
 		EntryOffset:   previous.EntryOffset,
 		LargeSelected: previous.LargeSelected,
 		LargeOffset:   previous.LargeOffset,
-		NeedsRefresh:  needsRefresh,
+		NeedsRefresh:  needsRefresh || result.State != scanComplete,
 		IsOverview:    previous.IsOverview,
 	}
 	return entry
@@ -647,6 +653,11 @@ func saveCacheToDisk(path string, result scanResult) error {
 }
 
 func saveCacheToDiskWithOptions(publication *scanPublication, path string, result scanResult, needsRefresh bool) error {
+	// A partial total is a lower bound: persisting it would present it later as
+	// an authoritative measurement.
+	if result.State != scanComplete {
+		return nil
+	}
 	if err := publication.ctx.Err(); err != nil {
 		return err
 	}

@@ -371,3 +371,128 @@ func BenchmarkGetDirectorySizeFromDuWithExcludeHomeLibrary(b *testing.B) {
 		}
 	}
 }
+
+// A readable root must not turn an unreadable descendant into a measured zero,
+// and a partial scan must not overwrite the good cache entry with a lower bound.
+func TestScanUnreadableDescendantPreservesCoverageAndGoodCache(t *testing.T) {
+	skipIfRoot(t)
+	// The fixture compares measured bytes across two scans of the same tree, so
+	// it needs a filesystem that reports real allocation for its files.
+	skipIfBlockAccountingUnreliable(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, "root")
+	child := filepath.Join(root, "child")
+	locked := filepath.Join(child, "locked")
+	writeFileWithSize(t, filepath.Join(child, "readable"), 4096)
+	writeFileWithSize(t, filepath.Join(locked, "hidden"), 1<<20)
+
+	scan := func() scanResult {
+		t.Helper()
+		var files, dirs, bytes int64
+		current := &atomic.Value{}
+		current.Store("")
+		result, err := scanPathConcurrentAllEntries(context.Background(), root, &files, &dirs, &bytes, current)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+
+	good := scan()
+	if good.State != scanComplete {
+		t.Fatalf("initial scan state = %s, want complete", good.State)
+	}
+	if err := saveCacheToDisk(root, good); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	partial := scan()
+	// The exact bytes lost depend on the filesystem's block accounting, so the
+	// invariant is the one that matters: the unreadable subtree is gone, the
+	// readable bytes survive, and the result says it is a lower bound.
+	if partial.State != scanPartial {
+		t.Fatalf("partial scan must be marked partial: state=%s", partial.State)
+	}
+	if partial.TotalSize <= 0 || partial.TotalSize >= good.TotalSize {
+		t.Fatalf("partial result lost coverage or readable bytes: good=%d partial=%d", good.TotalSize, partial.TotalSize)
+	}
+	if len(partial.Entries) == 0 {
+		t.Fatal("partial scan produced no rows")
+	}
+	for _, entry := range partial.Entries {
+		if entry.Path == child && entry.State != scanPartial {
+			t.Fatalf("child coverage not propagated: state=%s", entry.State)
+		}
+	}
+
+	if err := saveCacheToDisk(root, partial); err != nil {
+		t.Fatal(err)
+	}
+	cached, err := loadCacheFromDisk(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cached.TotalSize != good.TotalSize {
+		t.Fatalf("partial scan replaced a good cache entry: got %d, want %d", cached.TotalSize, good.TotalSize)
+	}
+
+	if err := os.Chmod(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recovered := scan()
+	if recovered.State != scanComplete || recovered.TotalSize != good.TotalSize {
+		t.Fatalf("recovery after the permission came back: state=%s total=%d", recovered.State, recovered.TotalSize)
+	}
+}
+
+// A folded directory is sized with du instead of being walked, so its coverage
+// has to come from the du result itself: the row keeps the bytes du could
+// measure and says they are a lower bound, and the tree it belongs to is not
+// reported as complete.
+func TestScanFoldedDirWithUnreadableDescendantKeepsCoverage(t *testing.T) {
+	skipIfRoot(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, "root")
+	folded := filepath.Join(root, ".git")
+	locked := filepath.Join(folded, "objects")
+	writeFileWithSize(t, filepath.Join(folded, "HEAD"), 4096)
+	writeFileWithSize(t, filepath.Join(locked, "pack"), 1<<20)
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	var files, dirs, bytes int64
+	current := &atomic.Value{}
+	current.Store("")
+	result, err := scanPathConcurrentAllEntries(context.Background(), root, &files, &dirs, &bytes, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.State != scanPartial {
+		t.Fatalf("tree coverage = %s, want partial", result.State)
+	}
+	var row *dirEntry
+	for i := range result.Entries {
+		if result.Entries[i].Path == folded {
+			row = &result.Entries[i]
+		}
+	}
+	if row == nil {
+		t.Fatalf("the folded directory produced no row: %+v", result.Entries)
+	}
+	if row.State != scanPartial {
+		t.Fatalf("folded row coverage = %s, want partial", row.State)
+	}
+	if row.Size <= 0 {
+		t.Fatalf("folded row lost the bytes du could measure: %d", row.Size)
+	}
+}

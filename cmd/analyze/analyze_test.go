@@ -2118,9 +2118,8 @@ func TestOverviewRefillsKeepOneTickLoop(t *testing.T) {
 	}
 }
 
-// An overview row measured part-way must keep showing its bytes: discarding them
-// made a partially readable root look like a failed one. The coverage marker that
-// labels it arrives with A-3/A-4.
+// An overview row measured part-way must keep its bytes AND say that they are a
+// partial reading: the numbers a user acts on must be traceable to what was read.
 func TestOverviewPartialMeasurementStillShowsItsBytes(t *testing.T) {
 	m := newTickLoopTestModel(t, true)
 
@@ -2137,24 +2136,175 @@ func TestOverviewPartialMeasurementStillShowsItsBytes(t *testing.T) {
 	if partial.entries[0].Size != 8192 {
 		t.Fatalf("partial measurement was discarded: got %d, want 8192", partial.entries[0].Size)
 	}
-	if partial.overviewSizeCache[m.entries[0].Path] != 8192 {
-		t.Fatal("partial measurement was not kept for the session")
+	if partial.entries[0].State != scanPartial {
+		t.Fatalf("partial row state = %s, want partial", partial.entries[0].State)
 	}
-	if strings.Contains(partial.status, "Unable to measure") {
-		t.Fatalf("a row that produced bytes must not read as a failed row: %q", partial.status)
+	// A cached number is read back without a coverage marker, so a lower bound
+	// must not enter the session cache: it would come back as a complete one.
+	if _, cached := partial.overviewSizeCache[m.entries[0].Path]; cached {
+		t.Fatal("a partial total must not be cached as if it were complete")
+	}
+	if partial.scanState != scanPartial {
+		t.Fatalf("the total must inherit its rows' coverage: got %s", partial.scanState)
+	}
+	if got := measuredSizeLabel(partial.entries[0].Size, partial.entries[0].State); got != "8.2 kB+" {
+		t.Fatalf("partial row label = %q, want 8.2 kB+", got)
 	}
 
-	// A measurement that produced nothing must still report the failure.
+	// A measurement that produced nothing stays visible as unknown rather than
+	// reading as a measured zero.
 	updated, _ = m.Update(overviewSizeMsg{Path: m.entries[1].Path, Index: 1, Size: 0, Err: errors.New("cannot access path")})
 	failed, ok := updated.(model)
 	if !ok {
 		t.Fatalf("expected model, got %T", updated)
 	}
-	if !strings.Contains(failed.status, "Unable to measure") {
-		t.Fatalf("a measurement with no bytes must still surface its error, status=%q", failed.status)
+	if failed.entries[1].State != scanUnavailable {
+		t.Fatalf("unmeasurable row state = %s, want unavailable", failed.entries[1].State)
 	}
-	if failed.entries[1].Size != 0 {
-		t.Fatalf("expected the failed row to reset, got %d", failed.entries[1].Size)
+	if got := measuredSizeLabel(failed.entries[1].Size, failed.entries[1].State); got != "unknown" {
+		t.Fatalf("unmeasurable row label = %q, want unknown", got)
+	}
+}
+
+// Once the overview is finished its status line must carry the coverage: "Ready"
+// over a lower bound claims more than was measured.
+func TestFinishedOverviewStatusCarriesPartialCoverage(t *testing.T) {
+	m := newTickLoopTestModel(t, true)
+
+	wantTotal := int64(0)
+	for i := range m.entries {
+		size := int64(1024 * (i + 1))
+		var err error
+		if i == 0 {
+			size, err = 512, errors.New("du incomplete: permission denied")
+		}
+		wantTotal += size
+		updated, _ := m.Update(overviewSizeMsg{Path: m.entries[i].Path, Index: i, Size: size, Err: err})
+		m, _ = updated.(model)
+	}
+
+	if m.totalSize != wantTotal {
+		t.Fatalf("total lost measured rows: got %d, want %d", m.totalSize, wantTotal)
+	}
+	if m.scanState != scanPartial {
+		t.Fatalf("coverage = %s, want partial", m.scanState)
+	}
+	if !strings.HasPrefix(m.status, "Partial scan") {
+		t.Fatalf("finished overview status = %q, want a partial summary", m.status)
+	}
+}
+
+// A fully measured overview must still read as a clean finish: a marker shown on
+// complete data teaches users to ignore the real ones.
+func TestFullyMeasuredOverviewStaysComplete(t *testing.T) {
+	m := newTickLoopTestModel(t, true)
+
+	wantTotal := int64(0)
+	for i := range m.entries {
+		size := int64(1024 * (i + i + 2))
+		wantTotal += size
+		updated, _ := m.Update(overviewSizeMsg{Path: m.entries[i].Path, Index: i, Size: size})
+		m, _ = updated.(model)
+	}
+
+	if m.scanState != scanComplete {
+		t.Fatalf("fully measured overview coverage = %s, want complete", m.scanState)
+	}
+	if m.totalSize != wantTotal {
+		t.Fatalf("total = %d, want %d", m.totalSize, wantTotal)
+	}
+	if m.status != "Ready" {
+		t.Fatalf("a complete overview must still read as ready, got %q", m.status)
+	}
+}
+
+// A row that is still pending is not a measured zero: the list it belongs to has
+// no complete total yet.
+func TestEntryScanStateTreatsPendingRowsAsPartial(t *testing.T) {
+	if got := entryScanState([]dirEntry{{Size: 2048, State: scanComplete}, {Size: -1}}); got != scanPartial {
+		t.Fatalf("pending row: got %s, want partial", got)
+	}
+	if got := entryScanState([]dirEntry{{Size: 2048, State: scanPartial}}); got != scanPartial {
+		t.Fatalf("partial row: got %s, want partial", got)
+	}
+	if got := entryScanState([]dirEntry{{Size: 2048, State: scanComplete}}); got != scanComplete {
+		t.Fatalf("measured list: got %s, want complete", got)
+	}
+}
+
+// An empty row that was measured stays hidden; an unmeasurable row does not, or
+// the gap in coverage would be invisible.
+func TestOverviewFilterKeepsUnmeasurableRows(t *testing.T) {
+	kept := filterNonEmptyEntries([]dirEntry{
+		{Name: "measured-empty", Size: 0, State: scanComplete},
+		{Name: "unmeasurable", Size: 0, State: scanUnavailable},
+		{Name: "partial", Size: 2048, State: scanPartial},
+	})
+	if len(kept) != 2 {
+		t.Fatalf("kept %d rows (%v), want the unmeasurable and the partial one", len(kept), kept)
+	}
+	for _, entry := range kept {
+		if entry.Name == "measured-empty" {
+			t.Fatal("a measured zero must stay hidden")
+		}
+	}
+}
+
+// The walk-based sizing helpers must report coverage even when they kept bytes:
+// the caller needs the lower bound and the knowledge that it is one.
+func TestCalculateDirSizeKeepsBytesAndReportsIncomplete(t *testing.T) {
+	skipIfRoot(t)
+	skipIfBlockAccountingUnreliable(t)
+	home := t.TempDir()
+	locked := filepath.Join(home, "locked")
+	writeFileWithSize(t, filepath.Join(locked, "hidden"), 1<<20)
+	writeFileWithSize(t, filepath.Join(home, "readable"), 4096)
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	var files, dirs, bytes int64
+	current := &atomic.Value{}
+	current.Store("")
+
+	size, err := calculateDirSizeFast(context.Background(), home, &files, &dirs, &bytes, current)
+	if size <= 0 {
+		t.Fatalf("readable bytes lost: got %d", size)
+	}
+	if err == nil {
+		t.Fatal("an unreadable descendant must mark the measurement incomplete")
+	}
+
+	size, err = calculateDirSizeConcurrent(context.Background(), home, nil, nil, nil,
+		make(chan struct{}, 1), make(chan struct{}, 1), make(chan struct{}, 1), &files, &dirs, &bytes, current)
+	if size <= 0 {
+		t.Fatalf("readable bytes lost: got %d", size)
+	}
+	if err == nil {
+		t.Fatal("an unreadable descendant must mark the measurement incomplete")
+	}
+}
+
+// A readable tree must not come back partial: a false marker would teach users
+// to ignore the real ones.
+func TestCalculateDirSizeCompleteOnReadableTree(t *testing.T) {
+	home := t.TempDir()
+	writeFileWithSize(t, filepath.Join(home, "nested", "file"), 4096)
+
+	var files, dirs, bytes int64
+	current := &atomic.Value{}
+	current.Store("")
+
+	size, err := calculateDirSizeFast(context.Background(), home, &files, &dirs, &bytes, current)
+	if err != nil || size <= 0 {
+		t.Fatalf("clean tree measured incomplete: size=%d err=%v", size, err)
+	}
+
+	size, err = calculateDirSizeConcurrent(context.Background(), home, nil, nil, nil,
+		make(chan struct{}, 1), make(chan struct{}, 1), make(chan struct{}, 1), &files, &dirs, &bytes, current)
+	if err != nil || size <= 0 {
+		t.Fatalf("clean tree measured incomplete: size=%d err=%v", size, err)
 	}
 }
 
@@ -3459,7 +3609,11 @@ func TestCalculateDirSizeFastHighFanoutCompletes(t *testing.T) {
 
 	done := make(chan int64, 1)
 	go func() {
-		done <- calculateDirSizeFast(context.Background(), root, &files, &dirs, &bytes, current)
+		size, err := calculateDirSizeFast(context.Background(), root, &files, &dirs, &bytes, current)
+		if err != nil {
+			t.Errorf("calculateDirSizeFast reported incomplete coverage: %v", err)
+		}
+		done <- size
 	}()
 
 	select {
@@ -3547,5 +3701,140 @@ func TestOpenCommandNamePerPlatform(t *testing.T) {
 	}
 	if got := openCommandName(); got != want {
 		t.Fatalf("openCommandName() on %s = %q, want %q", runtime.GOOS, got, want)
+	}
+}
+
+// A partial row keeps its bytes and shows the lower-bound marker; a row that
+// could not be measured at all shows "unknown" instead of a measured zero, and a
+// row that measured zero stays hidden. A complete overview shows no marker.
+func TestOverviewRowsRenderTheirCoverage(t *testing.T) {
+	entries := []dirEntry{
+		{Name: "measured", Path: "/measured", Size: 16 << 30, IsDir: true},
+		{Name: "partial", Path: "/partial", Size: 8 << 20, IsDir: true, State: scanPartial},
+		{Name: "locked", Path: "/locked", Size: 0, IsDir: true, State: scanUnavailable},
+		{Name: "measured-empty", Path: "/empty", Size: 0, IsDir: true},
+	}
+
+	m := model{
+		isOverview: true,
+		path:       "/",
+		entries:    entries,
+		totalSize:  (16 << 30) + (8 << 20),
+		scanState:  scanPartial,
+	}
+	view := m.View()
+
+	if !strings.Contains(view, humanizeBytes(8<<20)+"+") {
+		t.Fatalf("partial row must show its bytes with a lower-bound marker, got:\n%s", view)
+	}
+	if !strings.Contains(view, "locked") {
+		t.Fatalf("an unmeasurable row must stay visible, got:\n%s", view)
+	}
+	if !strings.Contains(view, "unknown") {
+		t.Fatalf("an unmeasurable row must read as unknown, got:\n%s", view)
+	}
+	if strings.Contains(view, "measured-empty") {
+		t.Fatalf("a measured zero must stay hidden, got:\n%s", view)
+	}
+	if strings.Contains(view, humanizeBytes(16<<30)+"+") {
+		t.Fatalf("a fully measured row must not carry the marker, got:\n%s", view)
+	}
+
+	// Only the unmeasured rows lose their share: blanking the whole list
+	// because one root was unreadable would read as a broken screen.
+	for _, line := range strings.Split(view, "\n") {
+		switch {
+		case strings.Contains(line, "measured") && !strings.Contains(line, "%"):
+			t.Fatalf("a fully measured row must keep its percentage, got:\n%s", view)
+		case strings.Contains(line, "partial") && strings.Contains(line, "%"):
+			t.Fatalf("a partial row must not claim a percentage, got:\n%s", view)
+		}
+	}
+
+	complete := model{
+		isOverview: true,
+		path:       "/",
+		entries: []dirEntry{
+			{Name: "measured", Path: "/measured", Size: 16 << 30, IsDir: true},
+			{Name: "also", Path: "/also", Size: 8 << 20, IsDir: true},
+		},
+		totalSize: (16 << 30) + (8 << 20),
+	}
+	if strings.Contains(complete.View(), "+ "+humanizeBytes(8<<20)) || strings.Contains(complete.View(), humanizeBytes(8<<20)+"+") {
+		t.Fatalf("a complete overview must not show partial markers, got:\n%s", complete.View())
+	}
+}
+
+// The drill-down list carries the same coverage marking as the overview: a
+// directory whose subtree was only partly read shows its lower bound there too.
+func TestDirectoryListRendersRowCoverage(t *testing.T) {
+	m := model{
+		path:    "/srv/data",
+		history: []historyEntry{{Path: "/srv"}},
+		entries: []dirEntry{
+			{Name: "measured", Path: "/srv/data/measured", Size: 16 << 30, IsDir: true},
+			{Name: "partial", Path: "/srv/data/partial", Size: 8 << 20, IsDir: true, State: scanPartial},
+			{Name: "locked", Path: "/srv/data/locked", Size: 0, IsDir: true, State: scanUnavailable},
+		},
+		entriesAll: nil,
+		totalSize:  (16 << 30) + (8 << 20),
+		scanState:  scanPartial,
+	}
+
+	view := m.View()
+	if !strings.Contains(view, humanizeBytes(8<<20)+"+") {
+		t.Fatalf("a partial row must show its lower bound in the list view, got:\n%s", view)
+	}
+	if !strings.Contains(view, "unknown") {
+		t.Fatalf("an unmeasurable row must read as unknown in the list view, got:\n%s", view)
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "partial") && strings.Contains(line, "%") {
+			t.Fatalf("a partial row must not claim a percentage, got:\n%s", view)
+		}
+	}
+}
+
+// The cache is the one place where a lower bound could come back later looking
+// authoritative, so a partial total is never written, and coverage on a row that
+// is written has to survive the round-trip.
+func TestCacheKeepsCoverageContract(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	target := filepath.Join(dir, "tree")
+	writeFileWithSize(t, filepath.Join(target, "a"), 4096)
+
+	if err := saveCacheToDisk(target, scanResult{
+		State:      scanPartial,
+		TotalSize:  4096,
+		TotalFiles: 1,
+		Entries:    []dirEntry{{Name: "tree", Path: target, Size: 4096, IsDir: true, State: scanPartial}},
+	}); err != nil {
+		t.Fatalf("saving a partial result: %v", err)
+	}
+	if cached, err := loadCacheFromDisk(target); err == nil {
+		t.Fatalf("a partial total must not be readable back as a cached measurement: %+v", cached)
+	}
+
+	if err := saveCacheToDisk(target, scanResult{
+		State:      scanComplete,
+		TotalSize:  4096,
+		TotalFiles: 1,
+		Entries: []dirEntry{
+			{Name: "sub", Path: filepath.Join(target, "sub"), Size: 4096, IsDir: true, State: scanPartial},
+		},
+	}); err != nil {
+		t.Fatalf("saving a complete result: %v", err)
+	}
+	cached, err := loadCacheFromDisk(target)
+	if err != nil {
+		t.Fatalf("loading the cached result: %v", err)
+	}
+	if len(cached.Entries) != 1 {
+		t.Fatalf("cached entries = %+v, want one row", cached.Entries)
+	}
+	if cached.Entries[0].State != scanPartial {
+		t.Fatalf("a cached row's coverage must survive the round-trip: got %s", cached.Entries[0].State)
 	}
 }

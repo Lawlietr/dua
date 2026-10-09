@@ -266,6 +266,9 @@ func scanPathConcurrentWithLimiter(ctx context.Context, root string, filesScanne
 	var localBytesScanned int64
 	var subtreeFilesScanned atomic.Int64
 	var dedupedHardlink atomic.Bool
+	// incomplete records that part of the tree could not be read, so the total
+	// is a lower bound. Entries carry their own state for the row rendering.
+	var incomplete atomic.Bool
 
 	collectAllEntries := entryLimit <= 0
 	var collectedEntries []dirEntry
@@ -344,6 +347,7 @@ scanChildren:
 			// Count link size only to avoid double-counting targets.
 			info, err := child.Info()
 			if err != nil {
+				incomplete.Store(true)
 				continue
 			}
 			size := getActualFileSize(fullPath, info)
@@ -388,6 +392,9 @@ scanChildren:
 					if ctx.Err() != nil {
 						return
 					}
+					if result.State != scanComplete {
+						incomplete.Store(true)
+					}
 					atomic.AddInt64(&total, result.TotalSize)
 					if result.TotalFiles > 0 {
 						subtreeFilesScanned.Add(result.TotalFiles)
@@ -401,6 +408,7 @@ scanChildren:
 						Name:       name,
 						Path:       path,
 						Size:       result.TotalSize,
+						State:      result.State,
 						IsDir:      true,
 						LastAccess: time.Time{},
 					}, scanSendTimeout)
@@ -432,10 +440,13 @@ scanChildren:
 						return
 					}
 					if size <= 0 && err != nil {
-						size = calculateDirSizeFastWithLimiter(ctx, fullPath, limiter, filesScanned, dirsScanned, bytesScanned, currentPath)
+						size, err = calculateDirSizeFastWithLimiter(ctx, fullPath, limiter, filesScanned, dirsScanned, bytesScanned, currentPath)
 					}
 					if ctx.Err() != nil {
 						return
+					}
+					if err != nil {
+						incomplete.Store(true)
 					}
 					atomic.AddInt64(&total, size)
 					atomic.AddInt64(dirsScanned, 1)
@@ -444,6 +455,7 @@ scanChildren:
 						Name:       child.Name(),
 						Path:       fullPath,
 						Size:       size,
+						State:      measurementState(size, err),
 						IsDir:      true,
 						LastAccess: time.Time{},
 					}, scanSendTimeout)
@@ -459,6 +471,9 @@ scanChildren:
 				if ctx.Err() != nil {
 					return
 				}
+				if result.State != scanComplete {
+					incomplete.Store(true)
+				}
 				atomic.AddInt64(&total, result.TotalSize)
 				if result.TotalFiles > 0 {
 					subtreeFilesScanned.Add(result.TotalFiles)
@@ -472,6 +487,7 @@ scanChildren:
 					Name:       name,
 					Path:       path,
 					Size:       result.TotalSize,
+					State:      result.State,
 					IsDir:      true,
 					LastAccess: time.Time{},
 				}, scanSendTimeout)
@@ -489,6 +505,7 @@ scanChildren:
 
 		info, err := child.Info()
 		if err != nil {
+			incomplete.Store(true)
 			continue
 		}
 		// Actual disk usage for sparse/cloud files, deduping hardlinks.
@@ -566,7 +583,13 @@ scanChildren:
 		}
 	}
 
+	state := scanComplete
+	if incomplete.Load() {
+		state = scanPartial
+	}
+
 	return scanResult{
+		State:           state,
 		Entries:         entries,
 		LargeFiles:      largeFiles,
 		TotalSize:       total,
@@ -644,7 +667,8 @@ func scanSubdirWithCache(ctx context.Context, root string, largeFileChan chan<- 
 		return scanResult{}
 	}
 
-	return scanResult{TotalSize: calculateDirSizeConcurrent(ctx, root, largeFileChan, largeFileMinSize, limiter, dirSem, duSem, duQueueSem, filesScanned, dirsScanned, bytesScanned, currentPath)}
+	size, err := calculateDirSizeConcurrent(ctx, root, largeFileChan, largeFileMinSize, limiter, dirSem, duSem, duQueueSem, filesScanned, dirsScanned, bytesScanned, currentPath)
+	return scanResult{TotalSize: size, State: measurementState(size, err)}
 }
 
 func shouldFoldDirWithPath(name, path string) bool {
@@ -672,13 +696,14 @@ func shouldSkipFileForLargeTracking(path string) bool {
 }
 
 // calculateDirSizeFast performs concurrent dir sizing using os.ReadDir.
-func calculateDirSizeFast(ctx context.Context, root string, filesScanned, dirsScanned, bytesScanned *int64, currentPath *atomic.Value) int64 {
+func calculateDirSizeFast(ctx context.Context, root string, filesScanned, dirsScanned, bytesScanned *int64, currentPath *atomic.Value) (int64, error) {
 	return calculateDirSizeFastWithLimiter(ctx, root, newScanLimiter(0), filesScanned, dirsScanned, bytesScanned, currentPath)
 }
 
-func calculateDirSizeFastWithLimiter(ctx context.Context, root string, limiter *scanLimiter, filesScanned, dirsScanned, bytesScanned *int64, currentPath *atomic.Value) int64 {
+func calculateDirSizeFastWithLimiter(ctx context.Context, root string, limiter *scanLimiter, filesScanned, dirsScanned, bytesScanned *int64, currentPath *atomic.Value) (int64, error) {
 	var total atomic.Int64
 	var wg sync.WaitGroup
+	var failures scanFailures
 
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
@@ -703,6 +728,7 @@ func calculateDirSizeFastWithLimiter(ctx context.Context, root string, limiter *
 
 		entries, err := os.ReadDir(dirPath)
 		if err != nil {
+			failures.record(err)
 			return
 		}
 
@@ -728,6 +754,7 @@ func calculateDirSizeFastWithLimiter(ctx context.Context, root string, limiter *
 				}
 			} else {
 				info, err := entry.Info()
+				failures.record(err)
 				if err == nil {
 					size := getActualFileSize(filepath.Join(dirPath, entry.Name()), info)
 					localBytes += size
@@ -748,7 +775,8 @@ func calculateDirSizeFastWithLimiter(ctx context.Context, root string, limiter *
 	walk(root)
 	wg.Wait()
 
-	return total.Load()
+	failures.record(ctx.Err())
+	return total.Load(), failures.first
 }
 
 // Use Spotlight (mdfind) to quickly find large files.
@@ -841,13 +869,13 @@ func isInFoldedDir(path string) bool {
 	return false
 }
 
-func calculateDirSizeConcurrent(ctx context.Context, root string, largeFileChan chan<- fileEntry, largeFileMinSize *int64, limiter *scanLimiter, dirSem, duSem, duQueueSem chan struct{}, filesScanned, dirsScanned, bytesScanned *int64, currentPath *atomic.Value) int64 {
+func calculateDirSizeConcurrent(ctx context.Context, root string, largeFileChan chan<- fileEntry, largeFileMinSize *int64, limiter *scanLimiter, dirSem, duSem, duQueueSem chan struct{}, filesScanned, dirsScanned, bytesScanned *int64, currentPath *atomic.Value) (int64, error) {
 	if ctx.Err() != nil {
-		return 0
+		return 0, ctx.Err()
 	}
 	children, err := os.ReadDir(root)
 	if err != nil {
-		return 0
+		return 0, err
 	}
 
 	var total atomic.Int64
@@ -856,6 +884,7 @@ func calculateDirSizeConcurrent(ctx context.Context, root string, largeFileChan 
 	var localDirsScanned int64
 	var localBytesScanned int64
 	var wg sync.WaitGroup
+	var failures scanFailures
 
 scanChildren:
 	for _, child := range children {
@@ -867,6 +896,7 @@ scanChildren:
 		if child.Type()&fs.ModeSymlink != 0 {
 			info, err := child.Info()
 			if err != nil {
+				failures.record(err)
 				continue
 			}
 			size := getActualFileSize(fullPath, info)
@@ -900,13 +930,14 @@ scanChildren:
 						return
 					}
 					if size <= 0 && err != nil {
-						size = calculateDirSizeFastWithLimiter(ctx, fullPath, limiter, filesScanned, dirsScanned, bytesScanned, currentPath)
+						size, err = calculateDirSizeFastWithLimiter(ctx, fullPath, limiter, filesScanned, dirsScanned, bytesScanned, currentPath)
 					} else {
 						atomic.AddInt64(bytesScanned, size)
 					}
 					if ctx.Err() != nil {
 						return
 					}
+					failures.record(err)
 					total.Add(size)
 				})
 				continue
@@ -917,13 +948,15 @@ scanChildren:
 				wg.Go(func() {
 					defer func() { <-dirSem }()
 
-					size := calculateDirSizeConcurrent(ctx, fullPath, largeFileChan, largeFileMinSize, limiter, dirSem, duSem, duQueueSem, filesScanned, dirsScanned, bytesScanned, currentPath)
+					size, err := calculateDirSizeConcurrent(ctx, fullPath, largeFileChan, largeFileMinSize, limiter, dirSem, duSem, duQueueSem, filesScanned, dirsScanned, bytesScanned, currentPath)
+					failures.record(err)
 					total.Add(size)
 				})
 			case <-ctx.Done():
 				break scanChildren
 			default:
-				size := calculateDirSizeConcurrent(ctx, fullPath, largeFileChan, largeFileMinSize, limiter, dirSem, duSem, duQueueSem, filesScanned, dirsScanned, bytesScanned, currentPath)
+				size, err := calculateDirSizeConcurrent(ctx, fullPath, largeFileChan, largeFileMinSize, limiter, dirSem, duSem, duQueueSem, filesScanned, dirsScanned, bytesScanned, currentPath)
+				failures.record(err)
 				localTotal += size
 			}
 			continue
@@ -931,6 +964,7 @@ scanChildren:
 
 		info, err := child.Info()
 		if err != nil {
+			failures.record(err)
 			continue
 		}
 
@@ -968,7 +1002,8 @@ scanChildren:
 		atomic.AddInt64(dirsScanned, localDirsScanned)
 	}
 
-	return total.Load()
+	failures.record(ctx.Err())
+	return total.Load(), failures.first
 }
 
 // measureOverviewSize calculates the size of a directory using multiple strategies.

@@ -433,14 +433,14 @@ func scanLiveTarget(ctx context.Context, target liveScanTarget, largeFileChan ch
 			return scanResult{}, ctx.Err()
 		}
 		if size <= 0 && err != nil {
-			size = calculateDirSizeFastWithLimiter(ctx, target.path, limiter, filesScanned, dirsScanned, bytesScanned, currentPath)
+			size, err = calculateDirSizeFastWithLimiter(ctx, target.path, limiter, filesScanned, dirsScanned, bytesScanned, currentPath)
 		} else {
 			atomic.AddInt64(bytesScanned, size)
 		}
 		if ctx.Err() != nil {
 			return scanResult{}, ctx.Err()
 		}
-		return scanResult{TotalSize: size}, nil
+		return scanResult{TotalSize: size, State: measurementState(size, err)}, nil
 	}
 
 	if err := ctx.Err(); err != nil {

@@ -267,3 +267,26 @@ func formatUnusedTime(lastAccess time.Time) string {
 
 	return ""
 }
+
+// measuredSizeLabel renders a size with its coverage. A partial total is a real
+// measurement of part of the tree, so '+' marks that more bytes may exist; an
+// unavailable measurement must never read like a measured zero.
+func measuredSizeLabel(size int64, state scanState) string {
+	if state == scanUnavailable || (state == scanPartial && size == 0) {
+		return "unknown"
+	}
+	label := humanizeBytes(size)
+	if state == scanPartial {
+		label += "+"
+	}
+	return label
+}
+
+// scanSummary is the status line for a finished scan: a partial total must not
+// claim the whole tree was read.
+func scanSummary(size int64, state scanState) string {
+	if state != scanComplete {
+		return "Partial scan · " + measuredSizeLabel(size, state)
+	}
+	return fmt.Sprintf("Scanned %s", humanizeBytes(size))
+}

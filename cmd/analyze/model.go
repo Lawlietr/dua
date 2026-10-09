@@ -50,6 +50,7 @@ func measurementState(size int64, err error) scanState {
 }
 
 type dirEntry struct {
+	State      scanState
 	Name       string
 	Path       string
 	Size       int64
@@ -64,6 +65,7 @@ type fileEntry struct {
 }
 
 type scanResult struct {
+	State      scanState
 	Entries    []dirEntry
 	LargeFiles []fileEntry
 	TotalSize  int64
@@ -90,6 +92,7 @@ type cacheEntry struct {
 }
 
 type historyEntry struct {
+	State         scanState
 	Path          string
 	Entries       []dirEntry
 	LargeFiles    []fileEntry
@@ -160,6 +163,7 @@ type initializeMsg struct{}
 type tickMsg time.Time
 
 type model struct {
+	scanState           scanState
 	path                string
 	history             []historyEntry
 	entries             []dirEntry
@@ -214,6 +218,18 @@ func (m model) inOverviewMode() bool {
 	return m.isOverview && m.path == "/"
 }
 
+// entryScanState reports the coverage of a rendered list: a row that is still
+// pending, or that could only be measured partially, makes the total a lower
+// bound rather than a complete measurement.
+func entryScanState(entries []dirEntry) scanState {
+	for _, entry := range entries {
+		if entry.Size < 0 || entry.State != scanComplete {
+			return scanPartial
+		}
+	}
+	return scanComplete
+}
+
 func (m *model) hydrateOverviewEntries() {
 	m.entries = createOverviewEntries()
 	if m.overviewSizeCache == nil {
@@ -230,6 +246,7 @@ func (m *model) hydrateOverviewEntries() {
 		}
 	}
 	m.totalSize = sumKnownEntrySizes(m.entries)
+	m.scanState = entryScanState(m.entries)
 }
 
 func (m *model) sortOverviewEntriesBySize() {
