@@ -26,10 +26,16 @@ import (
 // v3: ordinary Parallels VM storage is included instead of skipped by name.
 // v4: an incomplete scan is no longer an authoritative measurement, so cached
 // totals written without coverage information are rejected.
-const cacheSchemaVersion = 4
+// v5: entries and overview snapshots record their coverage, so a partial result
+// lost only to permission denials can be cached and still reads as partial.
+const cacheSchemaVersion = 5
 
 type overviewSizeSnapshot struct {
-	Size          int64     `json:"size"`
+	Size int64 `json:"size"`
+	// Partial marks a size that is missing only folders this process may not
+	// read. Without it a cached under-count would come back with no coverage
+	// marker and read as an exact figure.
+	Partial       bool      `json:"partial,omitempty"`
 	Updated       time.Time `json:"updated"`
 	SchemaVersion int       `json:"schema_version"`
 }
@@ -52,7 +58,7 @@ func snapshotFromModel(m model) historyEntry {
 		EntryOffset:   m.offset,
 		LargeSelected: m.largeSelected,
 		LargeOffset:   m.largeOffset,
-		NeedsRefresh:  m.viewNeedsRefresh || m.scanning || m.scanState != scanComplete,
+		NeedsRefresh:  m.viewNeedsRefresh || m.scanning || (m.scanState != scanComplete && m.scanTransient),
 		IsOverview:    m.isOverview,
 	}
 }
@@ -81,8 +87,12 @@ func historyEntryFromScanResult(path string, result scanResult, previous history
 		EntryOffset:   previous.EntryOffset,
 		LargeSelected: previous.LargeSelected,
 		LargeOffset:   previous.LargeOffset,
-		NeedsRefresh:  needsRefresh || result.State != scanComplete,
-		IsOverview:    previous.IsOverview,
+		// Whether this view should be measured again is a different question from
+		// whether its bytes may be reused: a tree that lost part of its total to a
+		// timeout keeps a cacheable floor *and* asks for another look, because only
+		// the permission half of its gaps is fixed. See persistable.
+		NeedsRefresh: needsRefresh || result.transientFailure || !result.persistable(),
+		IsOverview:   previous.IsOverview,
 	}
 	return entry
 }
@@ -140,27 +150,43 @@ func getOverviewSizeStorePath() (string, error) {
 }
 
 func loadStoredOverviewSize(path string) (int64, error) {
+	size, _, err := loadStoredOverviewMeasurement(path)
+	return size, err
+}
+
+// loadStoredOverviewMeasurement returns the recorded size together with the
+// coverage it was measured under.
+func loadStoredOverviewMeasurement(path string) (int64, scanState, error) {
 	if path == "" {
-		return 0, fmt.Errorf("empty path")
+		return 0, scanComplete, fmt.Errorf("empty path")
 	}
 	overviewSnapshotMu.Lock()
 	defer overviewSnapshotMu.Unlock()
 	if err := ensureOverviewSnapshotCacheLocked(); err != nil {
-		return 0, err
+		return 0, scanComplete, err
 	}
 	if overviewSnapshotCache == nil {
-		return 0, fmt.Errorf("snapshot cache unavailable")
+		return 0, scanComplete, fmt.Errorf("snapshot cache unavailable")
 	}
 	if snapshot, ok := overviewSnapshotCache[path]; ok && snapshot.Size > 0 {
 		if time.Since(snapshot.Updated) < overviewCacheTTL {
-			return snapshot.Size, nil
+			if snapshot.Partial {
+				return snapshot.Size, scanPartial, nil
+			}
+			return snapshot.Size, scanComplete, nil
 		}
-		return 0, fmt.Errorf("snapshot expired")
+		return 0, scanComplete, fmt.Errorf("snapshot expired")
 	}
-	return 0, fmt.Errorf("snapshot not found")
+	return 0, scanComplete, fmt.Errorf("snapshot not found")
 }
 
 func storeOverviewSize(path string, size int64) error {
+	return storeOverviewMeasurement(path, size, false)
+}
+
+// storeOverviewMeasurement records a size; partial marks one that is missing
+// only folders this process is not allowed to read.
+func storeOverviewMeasurement(path string, size int64, partial bool) error {
 	if path == "" || size <= 0 {
 		return fmt.Errorf("invalid overview size")
 	}
@@ -176,12 +202,13 @@ func storeOverviewSize(path string, size int64) error {
 	// every save re-serializes and rewrites the entire store. Skip the write
 	// while the recorded value still stands; the timestamp is only refreshed
 	// often enough to keep a live entry from aging out.
-	if existing, ok := overviewSnapshotCache[path]; ok && existing.Size == size &&
+	if existing, ok := overviewSnapshotCache[path]; ok && existing.Size == size && existing.Partial == partial &&
 		time.Since(existing.Updated) < overviewCacheTTL/overviewRefreshDivisor {
 		return nil
 	}
 	overviewSnapshotCache[path] = overviewSizeSnapshot{
 		Size:          size,
+		Partial:       partial,
 		Updated:       time.Now(),
 		SchemaVersion: cacheSchemaVersion,
 	}
@@ -253,18 +280,26 @@ func persistOverviewSnapshotLocked() error {
 }
 
 func loadOverviewCachedSize(path string) (int64, error) {
+	size, _, err := loadOverviewCachedMeasurement(path)
+	return size, err
+}
+
+// loadOverviewCachedMeasurement falls back to the per-directory cache when no
+// overview snapshot exists, and carries that entry's coverage out so the caller
+// can label the number it is about to show.
+func loadOverviewCachedMeasurement(path string) (int64, scanState, error) {
 	if path == "" {
-		return 0, fmt.Errorf("empty path")
+		return 0, scanComplete, fmt.Errorf("empty path")
 	}
-	if snapshot, err := loadStoredOverviewSize(path); err == nil {
-		return snapshot, nil
+	if snapshot, state, err := loadStoredOverviewMeasurement(path); err == nil {
+		return snapshot, state, nil
 	}
 	cacheEntry, err := loadCacheFromDisk(path)
 	if err != nil {
-		return 0, err
+		return 0, scanComplete, err
 	}
-	_ = storeOverviewSize(path, cacheEntry.TotalSize)
-	return cacheEntry.TotalSize, nil
+	_ = storeOverviewMeasurement(path, cacheEntry.TotalSize, cacheEntry.State != scanComplete)
+	return cacheEntry.TotalSize, cacheEntry.State, nil
 }
 
 // duaCacheRoot is the single definition of the shared cache location; both
@@ -343,6 +378,12 @@ func getCachePath(path string) (string, error) {
 // back is slower than the single readdir it replaces. Only subtrees expensive
 // enough to rescan are persisted; see the budget comment in constants.go.
 func shouldPersistSubdirCache(result scanResult) bool {
+	// Reuse is decided by what the missing bytes would take to recover, not by
+	// how big the subtree is; the size test only keeps cheap subtrees out of the
+	// store. Both gates apply (see persistable).
+	if !result.persistable() {
+		return false
+	}
 	return result.TotalFiles >= subdirCacheMinFiles || result.TotalSize >= subdirCacheMinSize
 }
 
@@ -655,7 +696,7 @@ func saveCacheToDisk(path string, result scanResult) error {
 func saveCacheToDiskWithOptions(publication *scanPublication, path string, result scanResult, needsRefresh bool) error {
 	// A partial total is a lower bound: persisting it would present it later as
 	// an authoritative measurement.
-	if result.State != scanComplete {
+	if !result.persistable() {
 		return nil
 	}
 	if err := publication.ctx.Err(); err != nil {
@@ -672,6 +713,7 @@ func saveCacheToDiskWithOptions(publication *scanPublication, path string, resul
 	}
 
 	entry := cacheEntry{
+		State:         result.State,
 		Entries:       result.Entries,
 		LargeFiles:    result.LargeFiles,
 		TotalSize:     result.TotalSize,
@@ -820,8 +862,8 @@ func prefetchOverviewCache(ctx context.Context) {
 			}
 
 			size, err := measureOverviewSize(ctx, path)
-			if err == nil && size > 0 {
-				_ = storeOverviewSize(path, size)
+			if overviewMeasurementStorable(size, err) {
+				_ = storeOverviewMeasurement(path, size, err != nil)
 			}
 		})
 	}

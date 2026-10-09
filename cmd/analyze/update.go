@@ -85,6 +85,7 @@ func (m model) scanCmd(path string) tea.Cmd {
 	return func() tea.Msg {
 		if cached, err := loadCacheFromDisk(path); err == nil {
 			result := scanResult{
+				State:      cached.State,
 				Entries:    cached.Entries,
 				LargeFiles: cached.LargeFiles,
 				TotalSize:  cached.TotalSize,
@@ -98,6 +99,7 @@ func (m model) scanCmd(path string) tea.Cmd {
 
 		if stale, err := loadStaleCacheFromDisk(path); err == nil {
 			result := scanResult{
+				State:      stale.State,
 				Entries:    stale.Entries,
 				LargeFiles: stale.LargeFiles,
 				TotalSize:  stale.TotalSize,
@@ -178,6 +180,9 @@ func (m *model) ensureLiveEntryBacking() {
 func (m *model) applyLiveChildSize(entry dirEntry, complete bool, result scanResult) {
 	if complete && entry.State != scanComplete {
 		m.scanState = scanPartial
+		if result.transientFailure {
+			m.scanTransient = true
+		}
 	}
 	if complete && m.liveScanningPaths != nil {
 		delete(m.liveScanningPaths, entry.Path)
@@ -232,6 +237,7 @@ func (m *model) finishLiveScan(result scanResult) {
 	m.largeFilesAll = result.LargeFiles
 	m.totalSize = result.TotalSize
 	m.scanState = result.State
+	m.scanTransient = result.transientFailure
 	m.totalFiles = result.TotalFiles
 	m.viewNeedsRefresh = false
 	m.applyEntryFilter()
@@ -243,14 +249,17 @@ func (m *model) finishLiveScan(result scanResult) {
 		m.selectEntryPath(selectedPath)
 	}
 	m.cache[m.path] = historyEntryFromScanResult(m.path, result, m.cache[m.path], false)
-	if m.scanState == scanComplete && m.totalSize > 0 {
+	if result.persistable() && m.totalSize > 0 {
 		if m.overviewSizeCache == nil {
 			m.overviewSizeCache = make(map[string]int64)
 		}
-		m.overviewSizeCache[m.path] = m.totalSize
-		go func(path string, size int64) {
-			_ = storeOverviewSize(path, size)
-		}(m.path, m.totalSize)
+		// The in-memory map holds sizes only, so a lower bound stays out of it.
+		if result.State == scanComplete {
+			m.overviewSizeCache[m.path] = m.totalSize
+		}
+		go func(path string, size int64, partial bool) {
+			_ = storeOverviewMeasurement(path, size, partial)
+		}(m.path, m.totalSize, result.State != scanComplete)
 	}
 	go func(path string, scan scanResult) {
 		_ = saveCacheToDisk(path, scan)
@@ -331,6 +340,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.largeFiles = msg.result.LargeFiles
 		m.totalSize = msg.result.TotalSize
 		m.scanState = msg.result.State
+		m.scanTransient = result.transientFailure
 		m.totalFiles = msg.result.TotalFiles
 		m.viewNeedsRefresh = msg.stale
 		// Re-narrow to the active query if a background refresh landed while a
@@ -339,14 +349,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyEntryFilter()
 		m.applyLargeFilter()
 		m.cache[m.path] = historyEntryFromScanResult(m.path, result, m.cache[m.path], msg.stale)
-		if m.scanState == scanComplete && m.totalSize > 0 {
+		if result.persistable() && m.totalSize > 0 {
 			if m.overviewSizeCache == nil {
 				m.overviewSizeCache = make(map[string]int64)
 			}
-			m.overviewSizeCache[m.path] = m.totalSize
-			go func(path string, size int64) {
-				_ = storeOverviewSize(path, size)
-			}(m.path, m.totalSize)
+			if result.State == scanComplete {
+				m.overviewSizeCache[m.path] = m.totalSize
+			}
+			go func(path string, size int64, partial bool) {
+				_ = storeOverviewMeasurement(path, size, partial)
+			}(m.path, m.totalSize, result.State != scanComplete)
 		}
 
 		if msg.stale {
@@ -398,6 +410,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// scan could not stat produced no row at all, so entries alone cannot reveal
 		// the gap. Take whichever signal is worse.
 		m.scanState = msg.state
+		m.scanTransient = msg.transient
 		if entryState := entryScanState(msg.entries); entryState > m.scanState {
 			m.scanState = entryState
 		}
@@ -455,6 +468,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.totalSize = sumKnownEntrySizes(m.entries)
 			m.scanState = entryScanState(m.entries)
+			if isTransientFailure(msg.Err) {
+				// This row's gap may clear on the next attempt, so the overview
+				// as a whole is not safe to reuse without a rescan.
+				m.scanTransient = true
+			}
 
 			if msg.Err != nil {
 				label := "Size unavailable"
@@ -807,6 +825,9 @@ func (m model) goBack() (tea.Model, tea.Cmd) {
 	m.largeFiles = last.LargeFiles
 	m.totalSize = last.TotalSize
 	m.scanState = last.State
+	// A history entry records the coverage but not its cause, and
+	// NeedsRefresh already carries whether the view has to be re-read.
+	m.scanTransient = false
 	m.totalFiles = last.TotalFiles
 	m.viewNeedsRefresh = last.NeedsRefresh
 	m.clampEntrySelection()
@@ -913,6 +934,9 @@ func (m model) enterSelectedDir() (tea.Model, tea.Cmd) {
 			m.largeFiles = m.largeFilesAll
 			m.totalSize = cached.TotalSize
 			m.scanState = cached.State
+			// Only a partial lost to permission denials reaches the disk, so a
+			// cached partial is by construction not a transient one.
+			m.scanTransient = false
 			m.totalFiles = cached.TotalFiles
 			m.viewNeedsRefresh = cached.NeedsRefresh
 			m.selected = cached.Selected

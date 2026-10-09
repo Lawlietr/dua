@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"container/heap"
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -269,6 +270,14 @@ func scanPathConcurrentWithLimiter(ctx context.Context, root string, filesScanne
 	// incomplete records that part of the tree could not be read, so the total
 	// is a lower bound. Entries carry their own state for the row rendering.
 	var incomplete atomic.Bool
+	// transient records whether any of that loss came from a failure that may
+	// not recur (see isPermissionFailure): such a row is re-measured on the next
+	// visit. permission records whether any of it came from a permission denial,
+	// which is what makes the measured bytes reusable as a lower bound. The two
+	// flags are independent - a tree can lose bytes to both - and both are set
+	// on true only, so a concurrent store cannot clobber them.
+	var transient atomic.Bool
+	var permission atomic.Bool
 
 	collectAllEntries := entryLimit <= 0
 	var collectedEntries []dirEntry
@@ -347,7 +356,7 @@ scanChildren:
 			// Count link size only to avoid double-counting targets.
 			info, err := child.Info()
 			if err != nil {
-				incomplete.Store(true)
+				recordScanFailure(&incomplete, &transient, &permission, err)
 				continue
 			}
 			size := getActualFileSize(fullPath, info)
@@ -393,7 +402,7 @@ scanChildren:
 						return
 					}
 					if result.State != scanComplete {
-						incomplete.Store(true)
+						recordChildFailure(&incomplete, &transient, &permission, result)
 					}
 					atomic.AddInt64(&total, result.TotalSize)
 					if result.TotalFiles > 0 {
@@ -446,7 +455,7 @@ scanChildren:
 						return
 					}
 					if err != nil {
-						incomplete.Store(true)
+						recordScanFailure(&incomplete, &transient, &permission, err)
 					}
 					atomic.AddInt64(&total, size)
 					atomic.AddInt64(dirsScanned, 1)
@@ -473,6 +482,9 @@ scanChildren:
 				}
 				if result.State != scanComplete {
 					incomplete.Store(true)
+					if result.transientFailure {
+						transient.Store(true)
+					}
 				}
 				atomic.AddInt64(&total, result.TotalSize)
 				if result.TotalFiles > 0 {
@@ -505,7 +517,7 @@ scanChildren:
 
 		info, err := child.Info()
 		if err != nil {
-			incomplete.Store(true)
+			recordScanFailure(&incomplete, &transient, &permission, err)
 			continue
 		}
 		// Actual disk usage for sparse/cloud files, deduping hardlinks.
@@ -589,12 +601,14 @@ scanChildren:
 	}
 
 	return scanResult{
-		State:           state,
-		Entries:         entries,
-		LargeFiles:      largeFiles,
-		TotalSize:       total,
-		TotalFiles:      localFilesScanned + subtreeFilesScanned.Load(),
-		dedupedHardlink: dedupedHardlink.Load(),
+		State:            state,
+		Entries:          entries,
+		LargeFiles:       largeFiles,
+		TotalSize:        total,
+		TotalFiles:       localFilesScanned + subtreeFilesScanned.Load(),
+		dedupedHardlink:  dedupedHardlink.Load(),
+		transientFailure: transient.Load(),
+		partial:          permission.Load(),
 	}, nil
 }
 
@@ -603,6 +617,32 @@ func publishLargeFiles(ctx context.Context, files []fileEntry, largeFileChan cha
 		if !trySend(ctx, largeFileChan, file, scanSendTimeout) && ctx.Err() != nil {
 			return
 		}
+	}
+}
+
+// recordScanFailure notes that part of a tree could not be read, and sorts the
+// reason into the two flags that decide what happens next: a permission denial
+// leaves a reusable floor, anything else means the next scan may measure further.
+// Both are set-only, so concurrent callers cannot clobber each other's answer.
+func recordScanFailure(incomplete, transient, permission *atomic.Bool, err error) {
+	incomplete.Store(true)
+	if isPermissionFailure(err) {
+		permission.Store(true)
+	} else {
+		transient.Store(true)
+	}
+}
+
+// recordChildFailure folds one child subtree's own verdict into the parent's.
+// The child already classified its gaps, so the parent inherits the flags rather
+// than guessing from the child's size.
+func recordChildFailure(incomplete, transient, permission *atomic.Bool, result scanResult) {
+	incomplete.Store(true)
+	if result.transientFailure {
+		transient.Store(true)
+	}
+	if result.partial {
+		permission.Store(true)
 	}
 }
 
@@ -620,6 +660,14 @@ func loadCachedSubdirResult(ctx context.Context, path string, largeFileChan chan
 		LargeFiles: cached.LargeFiles,
 		TotalSize:  cached.TotalSize,
 		TotalFiles: cached.TotalFiles,
+		State:      cached.State,
+	}
+	// A stored partial is a lower bound, and only a permission-shaped one is ever
+	// stored (see persistable). Restoring the state is what keeps the row marked
+	// and tells the parent not to treat these bytes as a full measurement; the
+	// partial flag says why it is safe to reuse them without rescanning.
+	if result.State == scanPartial {
+		result.partial = true
 	}
 	publishLargeFiles(ctx, result.LargeFiles, largeFileChan)
 	return result, true
@@ -668,7 +716,12 @@ func scanSubdirWithCache(ctx context.Context, root string, largeFileChan chan<- 
 	}
 
 	size, err := calculateDirSizeConcurrent(ctx, root, largeFileChan, largeFileMinSize, limiter, dirSem, duSem, duQueueSem, filesScanned, dirsScanned, bytesScanned, currentPath)
-	return scanResult{TotalSize: size, State: measurementState(size, err)}
+	return scanResult{
+		TotalSize:        size,
+		State:            measurementState(size, err),
+		transientFailure: isTransientFailure(err),
+		partial:          partialFromPermissionErrors(err),
+	}
 }
 
 func shouldFoldDirWithPath(name, path string) bool {
@@ -1041,18 +1094,25 @@ func measureOverviewSize(ctx context.Context, path string) (int64, error) {
 		// Only a measurement with nothing usable is worth the recursive walk.
 		size, err = getDirectoryLogicalSizeWithExclude(ctx, path, excludePath, ignoreNames)
 	}
+	if overviewMeasurementStorable(size, err) {
+		// A partial total is now safe to record because the snapshot carries the
+		// coverage flag with it, so a later paint reads it as a lower bound
+		// instead of an exact figure.
+		_ = storeOverviewMeasurement(path, size, err != nil)
+	}
 	if err == nil {
-		_ = storeOverviewSize(path, size)
 		return size, nil
 	}
 	if size > 0 {
-		// A partial total is never published to the overview cache: a cached
-		// number carries no coverage marker, so it would read as complete.
 		return size, err
 	}
 
 	if cached, cacheErr := loadCacheFromDisk(path); cacheErr == nil {
-		_ = storeOverviewSize(path, cached.TotalSize)
+		_ = storeOverviewMeasurement(path, cached.TotalSize, cached.State != scanComplete)
+		if cached.State != scanComplete {
+			// The cached number carries the same gap the scan that wrote it had.
+			return cached.TotalSize, fmt.Errorf("cached measurement for %s has partial coverage: %w", path, err)
+		}
 		return cached.TotalSize, nil
 	}
 
@@ -1065,6 +1125,43 @@ func getDirectorySizeFromDu(ctx context.Context, path string) (int64, error) {
 
 func getDirectorySizeFromDuWithExclude(ctx context.Context, path string, excludePath string) (int64, error) {
 	return getDirectorySizeFromDuWithExcludeAndIgnores(ctx, path, excludePath, nil)
+}
+
+// boundedSnippetWriter keeps the first bytes of a command's stderr and reports
+// what they say. A failing `du` over a huge tree can write more text than is
+// worth holding in memory for a yes/no question, so the rest is counted and
+// dropped.
+type boundedSnippetWriter struct {
+	buf bytes.Buffer
+}
+
+const stderrSnippetLimit = 64 << 10
+
+func (w *boundedSnippetWriter) Write(p []byte) (int, error) {
+	if remaining := stderrSnippetLimit - w.buf.Len(); remaining > 0 {
+		if len(p) > remaining {
+			p = p[:remaining]
+		}
+		w.buf.Write(p) //nolint:errcheck
+	}
+	return len(p), nil
+}
+
+// hasPermissionDenied reports whether the captured text names a permission
+// failure. du prints `du: cannot read directory 'x': Permission denied` for each
+// unreadable directory and still reports the total for the rest, so this is what
+// turns a non-zero exit into either a reusable floor or a measurement to retry.
+func (w *boundedSnippetWriter) hasPermissionDenied() bool {
+	for _, line := range strings.Split(w.buf.String(), "\n") {
+		if containsPermissionDeniedText(line) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsPermissionDeniedText(text string) bool {
+	return strings.Contains(strings.ToLower(text), "permission denied")
 }
 
 func getDirectorySizeFromDuWithExcludeAndIgnores(ctx context.Context, path string, excludePath string, ignoreNames []string) (int64, error) {
@@ -1099,6 +1196,12 @@ func getDirectorySizeFromDuWithExcludeAndIgnores(ctx context.Context, path strin
 		cmd := exec.CommandContext(ctx, "du", args...)
 		var stdout bytes.Buffer
 		cmd.Stdout = &stdout
+		// du names the directories it could not read on stderr, and that is the
+		// only place its failures appear: the process itself just exits non-zero.
+		// Captured with a cap because a tree with millions of unreadable files can
+		// write more than is worth holding; the first lines carry the verdict.
+		var stderr boundedSnippetWriter
+		cmd.Stderr = &stderr
 
 		runErr := cmd.Run()
 		fields := strings.Fields(stdout.String())
@@ -1122,8 +1225,13 @@ func getDirectorySizeFromDuWithExcludeAndIgnores(ctx context.Context, path strin
 		// prints the aggregate for the part it could read. Keep the bytes *and*
 		// the failure: dropping the bytes makes every caller re-measure the same
 		// tree with a much slower recursive walk, and dropping the error hides
-		// from the caller that the number is not a full measurement.
+		// from the caller that the number is not a full measurement. The stderr
+		// decides which kind of failure it was: a permission denial will repeat,
+		// so the bytes du did count are a floor worth keeping.
 		if runErr != nil {
+			if stderr.hasPermissionDenied() {
+				runErr = errors.Join(runErr, fs.ErrPermission)
+			}
 			return kb * 1024, fmt.Errorf("du incomplete for %s: %w", target, runErr)
 		}
 		return kb * 1024, nil

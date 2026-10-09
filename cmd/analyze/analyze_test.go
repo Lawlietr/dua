@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -13,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -965,6 +967,42 @@ func TestStoreOverviewSizeSkipsWriteWhenValueUnchanged(t *testing.T) {
 	}
 	if _, err := os.Stat(storePath); err != nil {
 		t.Fatalf("expected a changed size to be persisted: %v", err)
+	}
+}
+
+// The coverage flag has to survive the store: without it a cached under-count
+// comes back with no marker and reads as an exact figure.
+func TestOverviewMeasurementKeepsPartialFlag(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	resetOverviewSnapshotForTest()
+
+	const target = "/Users/someone/locked-tree"
+	if err := storeOverviewMeasurement(target, 4096, true); err != nil {
+		t.Fatalf("storeOverviewMeasurement(partial): %v", err)
+	}
+	size, state, err := loadStoredOverviewMeasurement(target)
+	if err != nil {
+		t.Fatalf("loadStoredOverviewMeasurement: %v", err)
+	}
+	if size != 4096 || state != scanPartial {
+		t.Fatalf("partial round-trip = (%d, %s), want (4096, partial)", size, state)
+	}
+
+	// Same number, different coverage: the write must not be skipped as an
+	// unchanged value, or a completed re-measure would keep reading as partial.
+	if err := storeOverviewMeasurement(target, 4096, false); err != nil {
+		t.Fatalf("storeOverviewMeasurement(complete): %v", err)
+	}
+	if _, state, err := loadStoredOverviewMeasurement(target); err != nil || state != scanComplete {
+		t.Fatalf("a completed re-measure must replace the partial flag, got state=%s err=%v", state, err)
+	}
+
+	if err := storeOverviewSize("/Users/someone/exact", 2048); err != nil {
+		t.Fatalf("storeOverviewSize: %v", err)
+	}
+	if _, state, err := loadStoredOverviewMeasurement("/Users/someone/exact"); err != nil || state != scanComplete {
+		t.Fatalf("a plain size must stay complete, got state=%s err=%v", state, err)
 	}
 }
 
@@ -3447,6 +3485,171 @@ func TestLoadCacheExpiresWhenModifiedAndReuseWindowPassed(t *testing.T) {
 	}
 }
 
+// Whether a subtree may be reused without rescanning is decided by why the
+// measurement is incomplete, not by whether it is. A directory this process
+// cannot read stays unreadable until something changes, so its partial total is
+// the best a rescan could produce and caching it saves a full walk. A total that
+// lost bytes to a timeout is not: the next scan may measure further, and serving
+// the frozen number would present a guess as a measurement.
+func TestShouldPersistSubdirCacheKeepsOnlyReusablePartials(t *testing.T) {
+	base := scanResult{TotalFiles: subdirCacheMinFiles, TotalSize: 4096}
+
+	permission := base
+	permission.State, permission.partial = scanPartial, true
+
+	both := permission
+	both.transientFailure = true
+
+	temporary := base
+	temporary.State, temporary.transientFailure = scanPartial, true
+
+	cases := []struct {
+		name   string
+		result scanResult
+		want   bool
+	}{
+		{"complete measurement", base, true},
+		{"partial with a permission cause", permission, true},
+		{"partial with a permission cause and a timeout", both, true},
+		{"partial with only a transient cause", temporary, false},
+		{"measured nothing", scanResult{State: scanUnavailable}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldPersistSubdirCache(tc.result); got != tc.want {
+				t.Fatalf("shouldPersistSubdirCache = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	// The gate has to hold where the file is written, not only in the decision
+	// helper: a stored lower bound that a rescan could improve is what makes a
+	// stale figure look current for the next three days.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	target := t.TempDir()
+	if err := saveCacheToDisk(target, temporary); err != nil {
+		t.Fatalf("saveCacheToDisk: %v", err)
+	}
+	if _, err := loadCacheFromDisk(target); err == nil {
+		t.Error("a total a rescan could improve must not reach the cache")
+	}
+}
+
+// A cached partial has to come back marked. Without the state on the way out, a
+// stored lower bound is indistinguishable from a measured total, and the row it
+// feeds is drawn as if nothing was missing.
+func TestCachedPartialSubtreeReadsBackAsPartial(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	parent := t.TempDir()
+	locked := filepath.Join(parent, "locked")
+	if err := os.Mkdir(locked, 0o755); err != nil {
+		t.Fatalf("Mkdir(locked): %v", err)
+	}
+	if err := saveCacheToDisk(locked, scanResult{
+		State:      scanPartial,
+		TotalSize:  4096,
+		TotalFiles: 4,
+		Entries:    []dirEntry{{Name: "locked", Path: locked, Size: 4096, IsDir: true, State: scanPartial}},
+		partial:    true,
+	}); err != nil {
+		t.Fatalf("saveCacheToDisk: %v", err)
+	}
+
+	got, ok := loadCachedSubdirResult(context.Background(), locked, nil)
+	if !ok {
+		t.Fatal("expected the cached subtree to be reusable")
+	}
+	if got.State != scanPartial {
+		t.Errorf("cached partial read back as %s", got.State)
+	}
+	if !got.partial {
+		t.Error("a cached lower bound must stay reusable as one, not be re-derived")
+	}
+	if got.TotalSize != 4096 {
+		t.Errorf("TotalSize = %d, want 4096", got.TotalSize)
+	}
+}
+
+// `du` only says which directories it could not read on stderr; the process
+// itself just exits non-zero. Without reading that text, an unreadable
+// subdirectory looks like a timeout and its bytes are re-walked on every visit.
+func TestDuStderrNamesUnreadableDirectories(t *testing.T) {
+	cases := []struct {
+		text string
+		want bool
+	}{
+		{text: "du: cannot read directory '/var/lib/registry': Permission denied\n", want: true},
+		{text: "du: cannot access '/gone': No such file or directory\n", want: false},
+		{text: "du: cannot read directory '/x': permission denied (case differs)\n", want: true},
+	}
+	for _, tc := range cases {
+		var w boundedSnippetWriter
+		if _, err := w.Write([]byte(tc.text)); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+		if got := w.hasPermissionDenied(); got != tc.want {
+			t.Errorf("hasPermissionDenied(%q) = %v, want %v", tc.text, got, tc.want)
+		}
+	}
+
+	// A tree with millions of unreadable files can write more than is worth
+	// holding for a yes/no question: the cap keeps the first lines, and text past
+	// the cap is not silently treated as evidence.
+	var w boundedSnippetWriter
+	flood := strings.Repeat("du: cannot access '/x': Input/output error\n", 4096) + "du: cannot read directory '/y': Permission denied\n"
+	if _, err := w.Write([]byte(flood)); err != nil {
+		t.Fatalf("Write(flood): %v", err)
+	}
+	if w.buf.Len() > stderrSnippetLimit {
+		t.Fatalf("stderr snippet grew to %d bytes, cap is %d", w.buf.Len(), stderrSnippetLimit)
+	}
+	if w.hasPermissionDenied() {
+		t.Error("a denial recorded past the cap must not be reported")
+	}
+}
+
+// The end of the chain: a real `du` over a tree with a directory this process
+// may not enter must yield both the bytes it counted and an error that reads as
+// a permission denial, which is what lets those bytes be cached. Root reads
+// mode-0000 directories, so the assertions run in the unprivileged child.
+func TestDuOnUnreadableSubtreeKeepsBytesAndNamesTheDenial(t *testing.T) {
+	if runTestWithoutPrivileges(t) {
+		return // the re-executed child runs the body as a non-root uid
+	}
+	root := t.TempDir()
+	locked := filepath.Join(root, "locked")
+	if err := os.Mkdir(locked, 0o755); err != nil {
+		t.Fatalf("Mkdir(locked): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(locked, "inner.txt"), make([]byte, 2048), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "readable.txt"), make([]byte, 1024), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	lockDirFromReader(t, locked)
+
+	size, err := getDirectorySizeFromDu(context.Background(), root)
+	if err == nil {
+		t.Fatal("du must report that part of the tree was unreadable")
+	}
+	if size <= 0 {
+		t.Fatalf("the readable part must still be measured, got %d", size)
+	}
+	if !isPermissionFailure(err) {
+		t.Fatalf("an unreadable directory repeats on every scan, so it must read as a permission denial: %v", err)
+	}
+	if !partialFromPermissionErrors(err) {
+		t.Errorf("the bytes du did count are a reusable floor: %v", err)
+	}
+	if state := measurementState(size, err); state != scanPartial {
+		t.Errorf("state = %s, want partial", state)
+	}
+}
+
 func TestLoadStaleCacheFromDiskAllowsRecentExpiredCache(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -3798,6 +4001,11 @@ func TestDirectoryListRendersRowCoverage(t *testing.T) {
 // The cache is the one place where a lower bound could come back later looking
 // authoritative, so a partial total is never written, and coverage on a row that
 // is written has to survive the round-trip.
+// B-2's contract: a partial result whose only gaps are permission denials is as
+// current as a complete one (rescanning cannot recover those bytes), so it is
+// cached and reads back with its coverage. A partial that lost bytes to a
+// transient failure is not worth its under-count, and a complete scan replaces a
+// cached partial.
 func TestCacheKeepsCoverageContract(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
@@ -3810,13 +4018,22 @@ func TestCacheKeepsCoverageContract(t *testing.T) {
 		TotalSize:  4096,
 		TotalFiles: 1,
 		Entries:    []dirEntry{{Name: "tree", Path: target, Size: 4096, IsDir: true, State: scanPartial}},
+		partial:    true,
 	}); err != nil {
-		t.Fatalf("saving a partial result: %v", err)
+		t.Fatalf("saving a denial-only partial: %v", err)
 	}
-	if cached, err := loadCacheFromDisk(target); err == nil {
-		t.Fatalf("a partial total must not be readable back as a cached measurement: %+v", cached)
+	cached, err := loadCacheFromDisk(target)
+	if err != nil {
+		t.Fatalf("a partial lost only to denials must be reusable without a rescan: %v", err)
+	}
+	if cached.State != scanPartial {
+		t.Fatalf("a cached partial must read back as partial, not %s", cached.State)
+	}
+	if cached.NeedsRefresh {
+		t.Fatal("a denial-only partial must not demand a refresh on every visit")
 	}
 
+	// A complete scan over the same path replaces the partial.
 	if err := saveCacheToDisk(target, scanResult{
 		State:      scanComplete,
 		TotalSize:  4096,
@@ -3827,15 +4044,112 @@ func TestCacheKeepsCoverageContract(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("saving a complete result: %v", err)
 	}
-	cached, err := loadCacheFromDisk(target)
+	cached, err = loadCacheFromDisk(target)
 	if err != nil {
 		t.Fatalf("loading the cached result: %v", err)
+	}
+	if cached.State != scanComplete {
+		t.Fatalf("a complete scan must overwrite a cached partial, got %s", cached.State)
 	}
 	if len(cached.Entries) != 1 {
 		t.Fatalf("cached entries = %+v, want one row", cached.Entries)
 	}
 	if cached.Entries[0].State != scanPartial {
 		t.Fatalf("a cached row's coverage must survive the round-trip: got %s", cached.Entries[0].State)
+	}
+}
+
+func TestCacheRejectsTransientPartial(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+
+	target := filepath.Join(dir, "tree")
+	writeFileWithSize(t, filepath.Join(target, "a"), 4096)
+
+	if err := saveCacheToDisk(target, scanResult{
+		State:            scanPartial,
+		TotalSize:        4096,
+		TotalFiles:       1,
+		transientFailure: true,
+		Entries:          []dirEntry{{Name: "tree", Path: target, Size: 4096, IsDir: true, State: scanPartial}},
+	}); err != nil {
+		t.Fatalf("saving a transient partial: %v", err)
+	}
+	if cached, err := loadCacheFromDisk(target); err == nil {
+		t.Fatalf("an under-count from a transient failure must not be reused: %+v", cached)
+	}
+}
+
+// NeedsRefresh is what decides whether a view is re-read on the next visit, so
+// the two failure kinds have to land on opposite sides of it.
+func TestNeedsRefreshFollowsFailureKind(t *testing.T) {
+	partial := scanResult{State: scanPartial, TotalSize: 4096, partial: true}
+
+	if entry := historyEntryFromScanResult("/tree", partial, historyEntry{}, false); entry.NeedsRefresh {
+		t.Fatal("a denial-only partial is the best a rescan can do, so it must not demand one")
+	}
+
+	transient := partial
+	transient.transientFailure = true
+	if entry := historyEntryFromScanResult("/tree", transient, historyEntry{}, false); !entry.NeedsRefresh {
+		t.Fatal("a partial that lost bytes to a transient failure must be re-read")
+	}
+
+	if entry := historyEntryFromScanResult("/tree", scanResult{State: scanUnavailable}, historyEntry{}, false); !entry.NeedsRefresh {
+		t.Fatal("a result that measured nothing must be re-read")
+	}
+}
+
+func TestClassifyPermissionVsTransientFailure(t *testing.T) {
+	denials := []error{
+		&fs.PathError{Op: "open", Path: "/locked", Err: syscall.EACCES},
+		os.ErrPermission,
+		fmt.Errorf("wrapped: %w", syscall.EPERM),
+	}
+	for _, err := range denials {
+		if !isPermissionFailure(err) {
+			t.Errorf("%v must classify as a permission denial", err)
+		}
+		if isTransientFailure(err) {
+			t.Errorf("%v must not classify as transient", err)
+		}
+	}
+
+	transient := []error{
+		context.DeadlineExceeded,
+		context.Canceled,
+		fmt.Errorf("du failed: %w", context.DeadlineExceeded),
+		&fs.PathError{Op: "stat", Path: "/gone", Err: syscall.ENOENT},
+	}
+	for _, err := range transient {
+		if isPermissionFailure(err) {
+			t.Errorf("%v must not classify as a permission denial", err)
+		}
+		if !isTransientFailure(err) {
+			t.Errorf("%v must classify as transient", err)
+		}
+	}
+
+	if isPermissionFailure(nil) || isTransientFailure(nil) {
+		t.Fatal("no failure is neither a denial nor transient")
+	}
+
+	// The persistability rule follows from the classification: what decides reuse
+	// is whether a denial contributed, not whether anything else did too.
+	if !(scanResult{State: scanPartial, partial: true}).persistable() {
+		t.Error("a partial with a permission cause must be persistable")
+	}
+	if (scanResult{State: scanPartial, partial: true, transientFailure: true}).persistable() == false {
+		t.Error("a tree with both a denial and a timeout keeps the floor it measured")
+	}
+	if (scanResult{State: scanPartial, transientFailure: true}).persistable() {
+		t.Error("a partial with only transient causes must not be persistable")
+	}
+	if !(scanResult{State: scanComplete}).persistable() {
+		t.Error("a complete result must be persistable")
+	}
+	if (scanResult{State: scanUnavailable}).persistable() {
+		t.Error("a result with no measurement must not be persistable")
 	}
 }
 

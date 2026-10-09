@@ -139,8 +139,8 @@ func measureOverviewEntriesForJSON(overviewEntries []dirEntry, insightPaths map[
 				err  error
 			)
 
-			if cached, cacheErr := loadOverviewCachedSize(item.Path); cacheErr == nil && cached > 0 {
-				size = cached
+			if cached, state, cacheErr := loadOverviewCachedMeasurement(item.Path); cacheErr == nil && cached > 0 {
+				size, item.State = cached, state
 			} else if insightPaths[item.Path] {
 				size, err = measureInsightSize(context.Background(), item.Path)
 			} else {
@@ -148,7 +148,7 @@ func measureOverviewEntriesForJSON(overviewEntries []dirEntry, insightPaths map[
 			}
 
 			// A measurement that failed part-way still carries the bytes it got;
-			// JSON coverage marking is card B-2.
+			// exposing that coverage in the JSON document is card C-2.
 			if err == nil || size > 0 {
 				item.Size = size
 			}

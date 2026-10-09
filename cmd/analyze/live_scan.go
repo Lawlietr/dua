@@ -120,6 +120,8 @@ func startLiveScanCmdWithPolicy(path string, filesScanned, dirsScanned, bytesSca
 
 		return liveScanStartMsg{
 			state:         initial.State,
+			transient:     initial.transientFailure,
+			partial:       initial.partial,
 			id:            id,
 			path:          path,
 			entries:       initial.Entries,
@@ -155,6 +157,11 @@ func readLiveScanInitialEntries(root string, limiter *scanLimiter) (scanResult, 
 	// child whose Info() fails never becomes a row, so the gap is invisible in
 	// the entry list and survives only here.
 	state := scanComplete
+	// transient records whether any of the listing's gaps may clear on the next
+	// attempt; partial records whether any came from a permission denial, which is
+	// what makes the listed bytes reusable (see isPermissionFailure).
+	transient := false
+	partial := false
 
 	for _, child := range children {
 		fullPath := filepath.Join(root, child.Name())
@@ -168,6 +175,8 @@ func readLiveScanInitialEntries(root string, limiter *scanLimiter) (scanResult, 
 			info, err := child.Info()
 			if err != nil {
 				state = scanPartial
+				transient = transient || isTransientFailure(err)
+				partial = partial || isPermissionFailure(err)
 				continue
 			}
 			size := getActualFileSize(fullPath, info)
@@ -214,6 +223,8 @@ func readLiveScanInitialEntries(root string, limiter *scanLimiter) (scanResult, 
 		info, err := child.Info()
 		if err != nil {
 			state = scanPartial
+			transient = transient || isTransientFailure(err)
+			partial = partial || isPermissionFailure(err)
 			continue
 		}
 		size, _ := countableFileSize(info, &limiter.seen)
@@ -234,11 +245,13 @@ func readLiveScanInitialEntries(root string, limiter *scanLimiter) (scanResult, 
 	sortDirEntriesBySize(entries)
 	largeFiles = topLargeFiles(largeFiles)
 	return scanResult{
-		Entries:    entries,
-		TotalSize:  totalSize,
-		TotalFiles: totalFiles,
-		LargeFiles: largeFiles,
-		State:      state,
+		Entries:          entries,
+		TotalSize:        totalSize,
+		TotalFiles:       totalFiles,
+		LargeFiles:       largeFiles,
+		State:            state,
+		transientFailure: transient,
+		partial:          partial,
 	}, targets, nil
 }
 
@@ -276,6 +289,10 @@ func runLiveScan(
 	// makes the total a lower bound before a single target has been scanned.
 	var incomplete atomic.Bool
 	incomplete.Store(initial.State != scanComplete)
+	var transient atomic.Bool
+	transient.Store(initial.transientFailure)
+	var permission atomic.Bool
+	permission.Store(initial.partial)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
@@ -289,6 +306,11 @@ func runLiveScan(
 			result, err := scanLiveTargetWithProgress(ctx, id, root, target, largeFileChan, &largeFileMinSize, limiter, currentPath, stream, cachePolicy)
 			if err != nil && !errors.Is(err, context.Canceled) {
 				incomplete.Store(true)
+				if isPermissionFailure(err) {
+					permission.Store(true)
+				} else {
+					transient.Store(true)
+				}
 				// Keep the row: a directory that could not be read is still space
 				// the user is looking for, and dropping it hides the gap.
 				mu.Lock()
@@ -314,6 +336,12 @@ func runLiveScan(
 
 			if result.State != scanComplete {
 				incomplete.Store(true)
+				if result.transientFailure {
+					transient.Store(true)
+				}
+				if result.partial {
+					permission.Store(true)
+				}
 			}
 			totalSize.Add(result.TotalSize)
 			if result.TotalFiles > 0 {
@@ -374,12 +402,14 @@ func runLiveScan(
 		state = scanPartial
 	}
 	result := scanResult{
-		State:           state,
-		Entries:         finalEntries,
-		LargeFiles:      largeFiles,
-		TotalSize:       totalSize.Load(),
-		TotalFiles:      totalFiles.Load(),
-		dedupedHardlink: dedupedHardlink.Load(),
+		State:            state,
+		Entries:          finalEntries,
+		LargeFiles:       largeFiles,
+		TotalSize:        totalSize.Load(),
+		TotalFiles:       totalFiles.Load(),
+		dedupedHardlink:  dedupedHardlink.Load(),
+		transientFailure: transient.Load(),
+		partial:          permission.Load(),
 	}
 
 	stream.publish(liveScanEventMsg{id: id, path: root, kind: liveScanComplete, result: result})
@@ -469,7 +499,12 @@ func scanLiveTarget(ctx context.Context, target liveScanTarget, largeFileChan ch
 		if ctx.Err() != nil {
 			return scanResult{}, ctx.Err()
 		}
-		return scanResult{TotalSize: size, State: measurementState(size, err)}, nil
+		return scanResult{
+			TotalSize:        size,
+			State:            measurementState(size, err),
+			transientFailure: isTransientFailure(err),
+			partial:          partialFromPermissionErrors(err),
+		}, nil
 	}
 
 	if err := ctx.Err(); err != nil {

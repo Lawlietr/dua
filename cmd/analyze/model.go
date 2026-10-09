@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"sort"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -46,6 +49,35 @@ func measurementState(size int64, err error) scanState {
 	return scanUnavailable
 }
 
+// isPermissionFailure reports a denial that will repeat on every scan until the
+// permissions change (a chmod 0 directory, or a path this process may not
+// enter). A partial result caused only by those is as current as a complete
+// one, so re-measuring it on every visit only burns the same answer again.
+// Anything else - a timeout, a cancellation, a vanished file, an I/O error -
+// may clear on the next attempt, so its missing bytes are worth another try.
+func isPermissionFailure(err error) bool {
+	return err != nil && (errors.Is(err, fs.ErrPermission) || errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM))
+}
+
+func isTransientFailure(err error) bool {
+	return err != nil && !isPermissionFailure(err)
+}
+
+// partialFromPermissionErrors reports whether any of the errors that made a
+// measurement incomplete were permission denials, i.e. whether some of the
+// missing bytes are worth keeping as a cached lower bound. A tree with a
+// chmod-0 subdirectory measures the same way on every visit, so its partial
+// total is the current answer; a tree that lost bytes to a timeout has a
+// different answer next time, and caching the old one would hide that.
+func partialFromPermissionErrors(errs ...error) bool {
+	for _, err := range errs {
+		if isPermissionFailure(err) {
+			return true
+		}
+	}
+	return false
+}
+
 type dirEntry struct {
 	State      scanState
 	Name       string
@@ -72,9 +104,43 @@ type scanResult struct {
 	// scan. Such a result is scan-order dependent and must not be written
 	// to the on-disk cache. In-memory only; never serialized to cacheEntry.
 	dedupedHardlink bool
+	// transientFailure is true when part of the coverage was lost to a failure
+	// that may not recur (see isPermissionFailure). A row like that is always
+	// re-measured on the next visit (see shouldRefreshExistingResult): its missing
+	// bytes are an arbitrary amount frozen at an arbitrary moment. In-memory only.
+	transientFailure bool
+	// partial is true when at least one permission denial contributed to the
+	// missing bytes, so the bytes that *were* measured are the same ones the next
+	// scan would find, and the total may be cached as a lower bound. A tree can
+	// set both flags - it lost bytes to a denial and to a timeout - and stays
+	// cacheable: the floor is still honest, and pressing R retries the temporary
+	// half. `persistable` is what decides reuse. In-memory only.
+	partial bool
+}
+
+// persistable reports whether a result may be reused without rescanning. It
+// answers "is this the best answer a rescan could produce?", not "is this
+// complete?": a partial whose gaps include a permission denial is the former,
+// because those bytes stay unreadable until access changes, and the coverage
+// marker keeps it honest in the TUI. A partial whose gaps are all temporary
+// (a timeout, a cancellation) is not: rescanning can recover those bytes, and
+// reusing the frozen lower bound would report them as measured.
+func (r scanResult) persistable() bool {
+	return r.State == scanComplete || (r.State == scanPartial && r.partial)
+}
+
+// overviewMeasurementStorable keeps an overview measurement whose only failures
+// were permission denials, like a clean one: rescanning cannot recover those
+// bytes until access changes. Transient ones stay unstored.
+func overviewMeasurementStorable(size int64, err error) bool {
+	return size > 0 && (err == nil || isPermissionFailure(err))
 }
 
 type cacheEntry struct {
+	// State records the coverage the totals were measured under, so a cached
+	// partial keeps reading as partial after a reload. Entries written by an
+	// older binary decode this as scanComplete, which matches what they were.
+	State        scanState
 	Entries      []dirEntry
 	LargeFiles   []fileEntry
 	TotalSize    int64
@@ -111,7 +177,14 @@ type scanResultMsg struct {
 }
 
 type liveScanStartMsg struct {
-	state         scanState
+	state scanState
+	// transient says whether the listing's own gaps may clear on a retry, so
+	// the model can decide later whether this view is worth re-scanning.
+	transient bool
+	// partial says the listing's bytes are a reusable floor: at least one gap is
+	// a permission denial, so it will still be there next time. Only used to
+	// carry coverage into the scan that follows, never rendered on its own.
+	partial       bool
 	id            int64
 	path          string
 	entries       []dirEntry
@@ -162,6 +235,7 @@ type tickMsg time.Time
 
 type model struct {
 	scanState           scanState
+	scanTransient       bool // scanState != scanComplete because of a transient failure
 	path                string
 	history             []historyEntry
 	entries             []dirEntry
@@ -238,13 +312,19 @@ func (m *model) hydrateOverviewEntries() {
 			m.entries[i].Size = size
 			continue
 		}
-		if size, err := loadOverviewCachedSize(m.entries[i].Path); err == nil {
+		if size, state, err := loadOverviewCachedMeasurement(m.entries[i].Path); err == nil {
 			m.entries[i].Size = size
-			m.overviewSizeCache[m.entries[i].Path] = size
+			m.entries[i].State = state
+			// The in-memory map holds sizes only, so a partial one must not
+			// enter it: it would come back on the next paint without its marker.
+			if state == scanComplete {
+				m.overviewSizeCache[m.entries[i].Path] = size
+			}
 		}
 	}
 	m.totalSize = sumKnownEntrySizes(m.entries)
 	m.scanState = entryScanState(m.entries)
+	m.scanTransient = false
 }
 
 func (m *model) sortOverviewEntriesBySize() {
