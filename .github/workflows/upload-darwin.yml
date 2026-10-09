@@ -1,8 +1,9 @@
 # upload-darwin — one-off pipeline to attach a darwin/arm64 tarball to an
-# existing GitHub Release (v0.2.0). Cross-compiles on Linux, smoke-tests the
-# result on a real Apple Silicon runner, then uploads behind an explicit
-# confirmation guard. Safe to delete once the next regular release ships
-# darwin targets from the main release workflow.
+# existing GitHub Release. Cross-compiles on Linux, smoke-tests the result on a
+# real Apple Silicon runner, then uploads behind an explicit confirmation guard.
+# The release tag is an input, so the same run serves any release; it stays
+# needed until the next regular release ships darwin targets from the main
+# release workflow.
 name: upload-darwin
 
 on:
@@ -13,11 +14,11 @@ on:
         required: false
         default: 'main'
       version:
-        description: 'Version string embedded in the binaries'
+        description: 'Release tag to build for and attach to (e.g. v0.3.0)'
         required: false
-        default: 'v0.2.0'
+        default: 'v0.3.0'
       confirm_tag:
-        description: 'Type exactly "v0.2.0" to enable release upload; leave empty for a dry run'
+        description: 'Type exactly the same tag as "version" to enable the release upload; leave empty for a dry run'
         required: false
         default: ''
 
@@ -40,7 +41,7 @@ jobs:
           GOOS: darwin
           GOARCH: arm64
           CGO_ENABLED: "0"
-          VERSION: ${{ inputs.version || 'v0.2.0' }}
+          VERSION: ${{ inputs.version }}
           COMMIT: ${{ github.sha }}
         run: |
           mkdir -p bin
@@ -88,9 +89,11 @@ jobs:
           echo "darwin/arm64 smoke OK"
 
   upload:
-    name: attach assets to v0.2.0 release
+    name: attach darwin assets to the release
     needs: smoke
-    if: ${{ inputs.confirm_tag == 'v0.2.0' }}
+    # The guard is a self-match, not a literal tag: the run uploads only when the
+    # operator types the same tag twice. A dry run leaves confirm_tag empty.
+    if: ${{ inputs.confirm_tag != '' && inputs.confirm_tag == inputs.version }}
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -100,23 +103,30 @@ jobs:
           name: dua-darwin-arm64
           path: dist
       - name: Replace darwin assets on the release (linux assets untouched)
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
-          gh release delete-asset v0.2.0 dua-darwin-arm64.tar.gz --repo Lawlietr/dua --yes || true
-          gh release delete-asset v0.2.0 dua-darwin-arm64.tar.gz.sha256 --repo Lawlietr/dua --yes || true
-          gh release upload v0.2.0 \
+          case "$VERSION" in
+            v[0-9]*) ;;
+            *) echo "refusing: version must look like a release tag (got '$VERSION')"; exit 1 ;;
+          esac
+          gh release delete-asset "$VERSION" dua-darwin-arm64.tar.gz --repo Lawlietr/dua --yes || true
+          gh release delete-asset "$VERSION" dua-darwin-arm64.tar.gz.sha256 --repo Lawlietr/dua --yes || true
+          gh release upload "$VERSION" \
             dist/dua-darwin-arm64.tar.gz \
             dist/dua-darwin-arm64.tar.gz.sha256 \
             --repo Lawlietr/dua
       - name: Rebuild macOS section in release notes (replaces previous section)
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
-          gh api repos/Lawlietr/dua/releases/tags/v0.2.0 --jq .body > body.md
+          gh api "repos/Lawlietr/dua/releases/tags/$VERSION" --jq .body > body.md
           awk '/^### macOS \(Apple Silicon\)/{exit} {print}' body.md > body.trimmed && mv body.trimmed body.md
-          printf '%s\n' '### macOS (Apple Silicon) - experimental' \
-            '' \
-            'This release also ships `dua-darwin-arm64.tar.gz` as secondary support: cross-compiled by CI and smoke-tested on an Apple Silicon runner.' \
-            '' \
-            '- Install: `mkdir -p ~/.local/bin && curl -fsSL "https://github.com/Lawlietr/dua/releases/latest/download/dua-darwin-arm64.tar.gz" | tar -xz -C ~/.local/bin`' \
-            '- Built from the v0.2.0 sources plus small darwin-specific fixes (platform-aware update tarball resolution, `open`-based file opener), so the COMMIT embedded in the darwin binaries differs from the Linux assets.' \
-            '- Apple Silicon only; Intel Mac builds are not provided.' \
-            >> body.md
-          gh release edit v0.2.0 --notes-file body.md --repo Lawlietr/dua
+          {
+            printf '### macOS (Apple Silicon) - experimental\n\n'
+            printf 'This release also ships `dua-darwin-arm64.tar.gz` as secondary support: cross-compiled by CI and smoke-tested on an Apple Silicon runner.\n\n'
+            printf -- '- Install: `mkdir -p ~/.local/bin && curl -fsSL "https://github.com/Lawlietr/dua/releases/latest/download/dua-darwin-arm64.tar.gz" | tar -xz -C ~/.local/bin`\n'
+            printf -- '- Built from `%s` by this one-off pipeline; darwin is not yet part of the main release matrix, so its `commit` value is the ref this run was dispatched on rather than the tag commit.\n' "$VERSION"
+            printf -- '- Apple Silicon only; Intel Mac builds are not provided.\n'
+          } >> body.md
+          gh release edit "$VERSION" --notes-file body.md --repo Lawlietr/dua
