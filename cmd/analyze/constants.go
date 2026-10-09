@@ -290,7 +290,9 @@ var skipExtensions = map[string]bool{
 	".hx":     true,
 }
 
-var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+// Centered 2x2 shape: tall braille frames read as rectangles at terminal
+// line-height. Keep every frame one column wide (upstream 7d08959d).
+var spinnerFrames = []string{"⠖", "⠲", "⠴", "⠦"}
 
 const (
 	colorPurple     = "\033[0;35m"
