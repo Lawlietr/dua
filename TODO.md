@@ -8,6 +8,8 @@ Live backlog of upstream (`tw93/Mole`) commits worth porting to dua.
 - **Branch for porting**: `port/a-layer-upstream` (A-layer + UI/UX batches done). **Never port directly to `main`.**
 - Upstream rewrote history since the fork, so re-derive hashes against current `upstream/main` before porting. Every entry below was re-verified as a live `upstream/main` ancestor on 2026-10-09.
 
+**Tracking convention**: every backlog item is a card. `☐` = not started, `◐` = in progress (reverted at the end of the session, nothing on disk), `☑` = merged as its own commit. When a card closes, mark it and append a row to the [Work log](#work-log) with the real elapsed time — the estimates below are planning inputs, the log is what tells us whether a card size is realistic.
+
 ## P0 — Next batch: analyze partial-coverage chain
 
 Keep incomplete / partially-sized measurements visible across navigation, live scans, JSON, and caches. **Port as one unit** (13 commits; not cherry-pickable individually). Estimated ~20–35h for someone familiar with the codebase.
@@ -44,29 +46,39 @@ Slicing rules for this backlog — each card is a work-session unit:
 
 | Card | Scope | Upstream | Est. | Done when | Safe stop |
 |---|---|---|---|---|---|
-| `S0-1` | Re-fetch upstream, re-derive the chain diff, refresh the hash table in this file | — | 0.5h | this section lists current hashes and hunk counts | always safe |
-| `S0-2` | Test fixture helper for unreadable dirs that does **not** rely on `chmod 000` + root skip (our CI runs as root, so upstream's fixtures self-skip) | `318ee925` infra | 1h | helper + one self-verifying test runs under root CI | revert helper |
-| `A-1` | Add `scanState` type (`scanComplete`/`scanPartial`/…), `measurementState()`, unit tests. **Not wired into the model yet.** | `cf6165b2` (type part) | 45m | `go vet` clean, type tests pass, zero behavior change | self-contained |
-| `A-2` | Make `du` report "size + error = partial" instead of dropping the size; thread `context` through the du helpers | `155a0cca`, `d04453f1` | 60–90m | scanner-level tests show partial sizes survive a failing `du` | **highest-risk card — revert freely** |
-| `A-3` | Carry the state into scan results and the model (`m.scanState`, per-entry state); keep `NeedsRefresh` semantics consistent | `cf6165b2`, `580b8eb0` (model part) | 60m | a partial scan still renders correct totals and marks state | revert after A-2 |
-| `A-4` | Carry partial coverage through live scan events | `13f068ac` | 45m | live scan does not overwrite partial rows with zeros | independent of B |
-| `B-1` | `historyEntry` gains state; bump `cacheSchemaVersion` 3 → 4 so stale caches are rejected | `50c89d9b` (cache part) | 45m | old caches are ignored, not misread; note the one-time re-scan for release notes | must land with B-2 in the same release |
-| `B-2` | Cache partial scans correctly: partial results are reusable, a complete scan may overwrite them, stale writes are rejected, changed sizes invalidate | `50c89d9b`, `20ac485b` | 60–90m | navigation + relaunch keeps partial without rescanning forever | second riskiest card |
-| `B-3` | Keep complete child caches after a partial parent refresh | `f5b4130c` | 45m | child caches survive a partial refresh | low coupling |
-| `C-1` | TUI labels for partial/incomplete sizes (`measuredSizeLabel`, `scanSummary`) and pending-size column alignment | `53c4d362`, `580b8eb0` (view), `99a9471d`, `a4350259`, `b77a48d7` | 60m | a partial row is visibly distinguishable and aligned | view-only |
-| `C-2` | JSON contract: `scan_status` on the document and on entries + tests | `1cbaad5e` | 45m | `dua analyze --json` exposes coverage | additive field only |
-| `C-3` | Docs: `README.md` + `README.zh-TW.md` in sync, version decision (**minor bump → v0.3.0**, behavior change), release note about the one-time cache invalidation | — | 45m | both READMEs match heading-for-heading | last card of the release |
-| `D-1` | Real-machine A/B: run the same path before/after, diff the totals and the new markers | — | 30m | a short note in the PR with the observed diff | always safe |
-| `D-2` | Port the navigation-regression test suite on top of the `S0-2` fixture | `318ee925`, `b77a48d7` | 45m | tests run (not skip) under our root CI | test-only |
+| `S0-1` ☐ | Re-fetch upstream, re-derive the chain diff, refresh the hash table in this file | — | 0.5h | this section lists current hashes and hunk counts | always safe |
+| `S0-2` ☐ | Test fixture helper for unreadable dirs that does **not** rely on `chmod 000` + root skip (our CI runs as root, so upstream's fixtures self-skip) | `318ee925` infra | 1h | helper + one self-verifying test runs under root CI | revert helper |
+| `A-1` ☐ | Add `scanState` type (`scanComplete`/`scanPartial`/…), `measurementState()`, unit tests. **Not wired into the model yet.** | `cf6165b2` (type part) | 45m | `go vet` clean, type tests pass, zero behavior change | self-contained |
+| `A-2` ☐ | Make `du` report "size + error = partial" instead of dropping the size; thread `context` through the du helpers | `155a0cca`, `d04453f1` | 60–90m | scanner-level tests show partial sizes survive a failing `du` | **highest-risk card — revert freely** |
+| `A-3` ☐ | Carry the state into scan results and the model (`m.scanState`, per-entry state); keep `NeedsRefresh` semantics consistent | `cf6165b2`, `580b8eb0` (model part) | 60m | a partial scan still renders correct totals and marks state | revert after A-2 |
+| `A-4` ☐ | Carry partial coverage through live scan events | `13f068ac` | 45m | live scan does not overwrite partial rows with zeros | independent of B |
+| `B-1` ☐ | `historyEntry` gains state; bump `cacheSchemaVersion` 3 → 4 so stale caches are rejected | `50c89d9b` (cache part) | 45m | old caches are ignored, not misread; note the one-time re-scan for release notes | must land with B-2 in the same release |
+| `B-2` ☐ | Cache partial scans correctly: partial results are reusable, a complete scan may overwrite them, stale writes are rejected, changed sizes invalidate | `50c89d9b`, `20ac485b` | 60–90m | navigation + relaunch keeps partial without rescanning forever | second riskiest card |
+| `B-3` ☐ | Keep complete child caches after a partial parent refresh | `f5b4130c` | 45m | child caches survive a partial refresh | low coupling |
+| `C-1` ☐ | TUI labels for partial/incomplete sizes (`measuredSizeLabel`, `scanSummary`) and pending-size column alignment | `53c4d362`, `580b8eb0` (view), `99a9471d`, `a4350259`, `b77a48d7` | 60m | a partial row is visibly distinguishable and aligned | view-only |
+| `C-2` ☐ | JSON contract: `scan_status` on the document and on entries + tests | `1cbaad5e` | 45m | `dua analyze --json` exposes coverage | additive field only |
+| `C-3` ☐ | Docs: `README.md` + `README.zh-TW.md` in sync, version decision (**minor bump → v0.3.0**, behavior change), release note about the one-time cache invalidation | — | 45m | both READMEs match heading-for-heading | last card of the release |
+| `D-1` ☐ | Real-machine A/B: run the same path before/after, diff the totals and the new markers | — | 30m | a short note in the PR with the observed diff | always safe |
+| `D-2` ☐ | Port the navigation-regression test suite on top of the `S0-2` fixture | `318ee925`, `b77a48d7` | 45m | tests run (not skip) under our root CI | test-only |
 
 Suggested session plan: `S0-1` + `S0-2` as a warm-up session; then one of `A-1`/`A-3`/`A-4`/`B-1`/`B-3`/`C-2`/`C-3` for a 45–60 minute slot, and reserve `A-2`/`B-2` for a session where you have 2+ hours free. Total for the chain: ~11h (plus buffer), which is why it must not be attempted as one sitting.
+
+Hard ordering (everything else is free-choice):
+
+1. `A-1` before `A-2`/`A-3` — the type has to exist before anything can carry it.
+2. `A-3` before `A-4` — live-scan events read the model state.
+3. `A-2` before `B-2` — the cache cannot persist a state the scanner never produces.
+4. `B-1` and `B-2` in the same release — a half-bumped cache schema misreads old entries.
+5. `S0-2` before `D-2` — the navigation tests need a fixture that is not skipped under root CI.
+6. `A-*` + `B-*` + `C-*` all present before tagging; `C-3` is the last card of the release.
+7. Stop-anywhere cards (safe to close a session on): `S0-1`, `A-1`, `A-4`, `B-3`, `C-1`, `C-2`, `D-1`, `D-2`.
 
 ## P1 — Status: stale process data (small, self-contained)
 
 | Card | Commit | Message | Est. |
 |---|---|---|---|
-| `P1-1` | `eb20146b` | retain stale process samples (collection side) | 45m |
-| `P1-2` | `390294d5` | mark stale process data in the TUI (`cmd/status/view.go`) | 45m |
+| `P1-1` ☐ | `eb20146b` | retain stale process samples (collection side) | 45m |
+| `P1-2` ☐ | `390294d5` | mark stale process data in the TUI (`cmd/status/view.go`) | 45m |
 
 `P1-1` must land first; `P1-2` depends on it but is a separate commit — both are safe to stop between.
 
@@ -74,10 +86,10 @@ Suggested session plan: `S0-1` + `S0-2` as a warm-up session; then one of `A-1`/
 
 | Card | Commit | Message | Est. |
 |---|---|---|---|
-| `P2-0` | — | spike: check whether the snapshot probe path exists in dua at all (Linux: `btrfs`/`zfs` snapshots, not Time Machine) before porting | 30m |
-| `P2-1` | `a6d59d49` | reject stale snapshot probes | 45m |
-| `P2-2` | `03311d45` | refresh local snapshot count (#1469) | 45m |
-| `P2-3` | `e9f52994` | surface local snapshot space (#1467) | 60m |
+| `P2-0` ☐ | — | spike: check whether the snapshot probe path exists in dua at all (Linux: `btrfs`/`zfs` snapshots, not Time Machine) before porting | 30m |
+| `P2-1` ☐ | `a6d59d49` | reject stale snapshot probes | 45m |
+| `P2-2` ☐ | `03311d45` | refresh local snapshot count (#1469) | 45m |
+| `P2-3` ☐ | `e9f52994` | surface local snapshot space (#1467) | 60m |
 
 Do `P2-0` first — if dua has no snapshot source on Linux, the whole P2 group becomes a documented skip instead of ~2.5h of porting.
 
@@ -87,9 +99,9 @@ Ported on `port/a-layer-upstream`:
 
 | Upstream | Message | dua commit | Note |
 |---|---|---|---|
-| `7d08959d` | fix(ui): use braille spinner frames for consistent stroke density | `9952bdde` | The A-layer log claimed this was done on 2026-10-04; it never was. |
-| `6aa93263` | fix(analyze): keep one spinner loop while overview scans refill | `e2994ff1` | Includes `TestOverviewRefillsKeepOneTickLoop`; verified red against the pre-change code. |
-| `19f14e40` | fix(analyze): keep one analyze animation loop across entry points | `e2994ff1` | `startTick` guard + `Init` → `initializeMsg` handoff; upstream's `scheduledTickCount` test helper and entry-point table test adapted to dua's model. |
+| `7d08959d` ☑ | fix(ui): use braille spinner frames for consistent stroke density | `9952bdde` | The A-layer log claimed this was done on 2026-10-04; it never was. |
+| `6aa93263` ☑ | fix(analyze): keep one spinner loop while overview scans refill | `e2994ff1` | Includes `TestOverviewRefillsKeepOneTickLoop`; verified red against the pre-change code. |
+| `19f14e40` ☑ | fix(analyze): keep one analyze animation loop across entry points | `e2994ff1` | `startTick` guard + `Init` → `initializeMsg` handoff; upstream's `scheduledTickCount` test helper and entry-point table test adapted to dua's model. |
 
 Still open from the original P3 list:
 
@@ -105,14 +117,14 @@ Cards follow the P0 slicing rules (≤ 90 min, end green, one commit each). The 
 
 | Card | Commit | Scope | Est. | Notes |
 |---|---|---|---|---|
-| `P4-L1` | `afc83fc5` | force C locale for every metric subprocess | 45m | bug fix, platform-agnostic, no surface area added |
-| `P4-L2` | `b5fc149a` | collect processes under comma-decimal locales | 45m | lands after `P4-L1`, shares its tests |
-| `P4-V1` | `bfbe240d` | verify whether `--watch` NDJSON is already in dua | 20m | dua ships `--watch` already — likely a documented skip, not a port |
-| `P4-H1` | `cd95c912` | keep the health score monotonic past CPU/memory high thresholds | 45m | only if dua has the health score; check first |
-| `P4-H2` | `4ee83df7` | inline health diagnosis | 90m | **feature**, needs the product filter + a minor version bump |
-| `P4-H3` | `825ef91b` | split diagnosis helpers into `diagnosis.go` | 30m | only after `P4-H2` |
-| `P4-C1` | `00a42fd9` | keep the CPU card inside the window | 45m | rendering only (`cmd/status/view.go`) |
-| `P4-C2` | `4cbab499` | configurable number of cores on the CPU card | 60m | adds a control — needs the product filter |
+| `P4-L1` ☐ | `afc83fc5` | force C locale for every metric subprocess | 45m | bug fix, platform-agnostic, no surface area added |
+| `P4-L2` ☐ | `b5fc149a` | collect processes under comma-decimal locales | 45m | lands after `P4-L1`, shares its tests |
+| `P4-V1` ☐ | `bfbe240d` | verify whether `--watch` NDJSON is already in dua | 20m | dua ships `--watch` already — likely a documented skip, not a port |
+| `P4-H1` ☐ | `cd95c912` | keep the health score monotonic past CPU/memory high thresholds | 45m | only if dua has the health score; check first |
+| `P4-H2` ☐ | `4ee83df7` | inline health diagnosis | 90m | **feature**, needs the product filter + a minor version bump |
+| `P4-H3` ☐ | `825ef91b` | split diagnosis helpers into `diagnosis.go` | 30m | only after `P4-H2` |
+| `P4-C1` ☐ | `00a42fd9` | keep the CPU card inside the window | 45m | rendering only (`cmd/status/view.go`) |
+| `P4-C2` ☐ | `4cbab499` | configurable number of cores on the CPU card | 60m | adds a control — needs the product filter |
 
 ## P5 — Analyze: cache robustness + live scan rows
 
@@ -120,11 +132,11 @@ These are independent of the P0 chain except for the `cache.go` hotspot; take th
 
 | Card | Commit | Scope | Est. | Notes |
 |---|---|---|---|---|
-| `P5-1` | `744e3a34` | stop the disk cache growing without bound | 60m | standalone fix |
-| `P5-2` | `194bdd8c` | prune expired cache files (#902) | 45m | pairs with `P5-1`, separate commit |
-| `P5-3` | `6127d79c` | serialize cache publication | 45m | concurrency fix; re-run with `-race` |
-| `P5-4` | `0dc42987` | cut the cache hot path, bound the overview store | 90m | measure before/after; treat `scanner.go` semaphores as independent budgets |
-| `P5-5` | `9fcbadf2` | show live directory scan rows | 90m | **feature** — needs the product filter; overlaps with `A-4` |
+| `P5-1` ☐ | `744e3a34` | stop the disk cache growing without bound | 60m | standalone fix |
+| `P5-2` ☐ | `194bdd8c` | prune expired cache files (#902) | 45m | pairs with `P5-1`, separate commit |
+| `P5-3` ☐ | `6127d79c` | serialize cache publication | 45m | concurrency fix; re-run with `-race` |
+| `P5-4` ☐ | `0dc42987` | cut the cache hot path, bound the overview store | 90m | measure before/after; treat `scanner.go` semaphores as independent budgets |
+| `P5-5` ☐ | `9fcbadf2` | show live directory scan rows | 90m | **feature** — needs the product filter; overlaps with `A-4` |
 
 ## SKIP — Mole-specific / macOS / cleanup (not dua scope)
 
@@ -144,6 +156,15 @@ dua is read-only and Linux-first. Do NOT port these:
 | … | ~80 more Mole-only commits | cleanup / uninstall / battery / Spotlight |
 
 Skipping `d3826922` / `e3f2e3bd` / `1aad186b` still costs drift: they keep reshaping upstream `cmd/analyze/scanner.go`, which widens the diff for the P0 chain. Re-derive that diff right before starting the batch.
+
+## Work log
+
+One row per closed card. The `actual` column is the input for re-sizing future cards.
+
+| Date | Card | Est. | Actual | Commit | Outcome / notes |
+|---|---|---|---|---|---|
+| 2026-10-09 | P3 batch (pre-card era) | — | ~2h | `9952bdde`, `e2994ff1` | 3 upstream commits + 4 tests; mutation-checked the tick guard. `make check` green, pty smoke OK. Not yet merged to `main`. |
+| 2026-10-09 | docs re-audit | — | ~1h | `67583cad`, `3d011733` | Corrected the A-layer upstream mapping, re-derived counts for `V1.58.0`, split the backlog into cards. |
 
 ## Notes
 
