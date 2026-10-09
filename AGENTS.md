@@ -85,7 +85,7 @@ Public docs and examples should prefer the installed `dua` command. Use `./dua` 
 
 ### Testing Notes
 
-- The test suite runs as the invoking user. Tests that depend on permission-denied semantics (`chmod 000`) call `skipIfRoot` so they skip under root CI. Tests that depend on `st_blocks` size accounting call `skipIfBlockAccountingUnreliable` (some containerized filesystems, e.g. ZFS, report one block per file and collapse sparse/actual-usage accounting).
+- The test suite runs as the invoking user. Tests that need permission-denied semantics (`chmod 000`) call `runTestWithoutPrivileges` (`cmd/analyze/test_helpers_test.go`), which re-runs the package's test binary inside a private user namespace (`unshare -U`) so the fixture applies even when the suite runs as root; `lockDirFromReader` sets the mode and restores it. Do not add root-skipping guards back — on root CI they silently drop the whole permission-denied path. `TestPermissionFixtureDropsReadAccess` pins the mechanism itself. Tests that depend on `st_blocks` size accounting call `skipIfBlockAccountingUnreliable` (some containerized filesystems, e.g. ZFS, report one block per file and collapse sparse/actual-usage accounting).
 - macOS-only behavior tests (Spotlight invocation, OrbStack insight, Trash paths) are gated on `runtime.GOOS == "darwin"` and skip on Linux.
 - Never pipe a test, check, or CI run into `tail` or `head`. The pipeline reports the pager's exit code, so a red run reads green. Let it print in full, or capture to a file and check the status separately.
 - Prefer targeted `go test ./cmd/analyze` / `go test ./cmd/status` during development; run `go test ./...` before committing.
