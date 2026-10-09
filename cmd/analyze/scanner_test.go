@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 )
 
@@ -70,6 +72,150 @@ func TestGetDirectorySizeFromDuSkippingImmediateChildDoesNotMeasureExcludedPath(
 	}
 	if len(measured) != 1 || measured[0] != included {
 		t.Fatalf("expected to measure only %s, measured %#v", included, measured)
+	}
+}
+
+// du exits non-zero when part of a tree is unreadable, but it still prints the
+// aggregate for the part it could read. Both halves have to survive: the bytes,
+// so no caller re-walks the same tree, and the error, so the result is reported
+// as partial rather than as a full measurement.
+func TestDuKeepsMeasuredBytesWhenItExitsNonZero(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "node_modules")
+	writeFileWithSize(t, filepath.Join(target, "file"), 1)
+
+	stubDir := t.TempDir()
+	// Exercise the real external-command boundary: a subtotal on stdout plus a
+	// non-zero exit, which is what GNU du does for an unreadable descendant.
+	stub := "#!/bin/sh\nprintf '8\tpartial\\n'\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(stubDir, "du"), []byte(stub), 0o755); err != nil {
+		t.Fatalf("write du stub: %v", err)
+	}
+	t.Setenv("PATH", stubDir)
+
+	size, err := getDirectorySizeFromDu(context.Background(), target)
+	if size != 8192 {
+		t.Fatalf("partial du output was dropped: size=%d err=%v", size, err)
+	}
+	if err == nil {
+		t.Fatal("a failing du must not report a complete measurement")
+	}
+	if got := measurementState(size, err); got != scanPartial {
+		t.Fatalf("a du run with bytes and a failure must classify as partial, got %s", got)
+	}
+}
+
+// One unreadable child must not discard the sizes already measured for its siblings.
+func TestSizeSkippingImmediateChildKeepsPartialTotals(t *testing.T) {
+	base := t.TempDir()
+	excluded := filepath.Join(base, "Library")
+	broken := filepath.Join(base, "Broken")
+	intact := filepath.Join(base, "Documents")
+	for _, dir := range []string{excluded, broken, intact} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+
+	measure := func(brokenErr error) (int64, error) {
+		return getDirectorySizeFromDuSkippingImmediateChild(base, excluded, func(path string) (int64, error) {
+			switch path {
+			case broken:
+				// 4096 bytes were measured before the failure, and they count.
+				return 4096, brokenErr
+			case intact:
+				return 8192, nil
+			default:
+				t.Errorf("unexpected measurement target: %s", path)
+				return 0, nil
+			}
+		})
+	}
+
+	complete, err := measure(nil)
+	if err != nil {
+		t.Fatalf("clean measurement failed: %v", err)
+	}
+
+	partial, err := measure(errors.New("permission denied"))
+	if err == nil {
+		t.Fatal("the child failure was dropped, so the caller would cache an incomplete tree as complete")
+	}
+	if partial != complete {
+		t.Fatalf("the failing child discarded its siblings' bytes: complete=%d partial=%d", complete, partial)
+	}
+	if got := measurementState(partial, err); got != scanPartial {
+		t.Fatalf("partial child run must classify as partial, got %s", got)
+	}
+}
+
+// A folded directory measured by a partially failing du must keep that number.
+// The old "any error means re-measure" guard threw away 8 KB of real
+// measurement and replaced it with a slow recursive walk of the same tree.
+func TestFoldedDirectoryKeepsPartialDuSize(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, "root")
+	folded := filepath.Join(root, "node_modules")
+	writeFileWithSize(t, filepath.Join(folded, "file"), 1)
+
+	stubDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stubDir, "du"), []byte("#!/bin/sh\nprintf '8\tpartial\\n'\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write du stub: %v", err)
+	}
+	t.Setenv("PATH", stubDir)
+
+	var files, dirs, bytes int64
+	current := &atomic.Value{}
+	current.Store("")
+	result, err := scanPathConcurrentAllEntries(context.Background(), root, &files, &dirs, &bytes, current)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+
+	for _, entry := range result.Entries {
+		if filepath.Clean(entry.Path) == filepath.Clean(folded) {
+			if entry.Size != 8192 {
+				t.Fatalf("partial du size was replaced by a re-walk for %s: got %d, want 8192 (%+v)", entry.Path, entry.Size, result)
+			}
+			return
+		}
+	}
+	t.Fatalf("folded directory missing from the scan result: %+v", result)
+}
+
+// The live-scan entry point takes the same folded shortcut, so it must keep the
+// same partial number as the full scan does.
+func TestLiveScanFoldedDirectoryKeepsPartialDuSize(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	folded := filepath.Join(home, "root", "node_modules")
+	writeFileWithSize(t, filepath.Join(folded, "file"), 1)
+
+	stubDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stubDir, "du"), []byte("#!/bin/sh\nprintf '8\tpartial\\n'\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write du stub: %v", err)
+	}
+	t.Setenv("PATH", stubDir)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	publication := newScanPublication(ctx, cancel)
+	limiter := newScanLimiter(1)
+	largeFileMinSize := int64(largeFileWarmupMinSize)
+	var files, dirs, bytes int64
+	current := &atomic.Value{}
+	current.Store("")
+
+	result, err := scanLiveTarget(ctx,
+		liveScanTarget{name: "folded", path: folded, kind: liveScanTargetFoldedDirectory},
+		make(chan fileEntry, 16), &largeFileMinSize, limiter,
+		&files, &dirs, &bytes, current, scanCacheBypass, publication)
+	if err != nil {
+		t.Fatalf("live scan: %v", err)
+	}
+	if result.TotalSize != 8192 {
+		t.Fatalf("live scan dropped the partial du measurement: got %d, want 8192 (%+v)", result.TotalSize, result)
 	}
 }
 

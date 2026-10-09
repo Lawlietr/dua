@@ -24,6 +24,21 @@ var spotlightQueryRunner = func(ctx context.Context, root, query string) ([]byte
 	return exec.CommandContext(ctx, "mdfind", "-onlyin", root, query).Output()
 }
 
+// scanFailures retains only the first failure, even for a large unreadable tree.
+// Workers may record concurrently; callers read it after joining those workers.
+// A recorded failure never cancels the measured total: the caller returns both
+// and lets measurementState classify the coverage.
+type scanFailures struct {
+	once  sync.Once
+	first error
+}
+
+func (f *scanFailures) record(err error) {
+	if err != nil {
+		f.once.Do(func() { f.first = err })
+	}
+}
+
 // scanPublication gives cancellation a linearizable boundary with externally
 // visible scan side effects. A publication either completes before cancel
 // returns, or observes the canceled scan and is rejected.
@@ -416,7 +431,7 @@ scanChildren:
 					if ctx.Err() != nil {
 						return
 					}
-					if err != nil || size <= 0 {
+					if size <= 0 && err != nil {
 						size = calculateDirSizeFastWithLimiter(ctx, fullPath, limiter, filesScanned, dirsScanned, bytesScanned, currentPath)
 					}
 					if ctx.Err() != nil {
@@ -884,7 +899,7 @@ scanChildren:
 					if ctx.Err() != nil {
 						return
 					}
-					if err != nil || size <= 0 {
+					if size <= 0 && err != nil {
 						size = calculateDirSizeFastWithLimiter(ctx, fullPath, limiter, filesScanned, dirsScanned, bytesScanned, currentPath)
 					} else {
 						atomic.AddInt64(bytesScanned, size)
@@ -1035,46 +1050,42 @@ func getDirectorySizeFromDuWithExcludeAndIgnores(ctx context.Context, path strin
 		}
 		args = append(args, target)
 		cmd := exec.CommandContext(ctx, "du", args...)
-		var stdout, stderr bytes.Buffer
+		var stdout bytes.Buffer
 		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
 
 		runErr := cmd.Run()
 		fields := strings.Fields(stdout.String())
-		if runErr != nil {
-			if ctx.Err() == context.DeadlineExceeded {
-				return 0, fmt.Errorf("du timeout after %v", duTimeout)
-			}
-			// BSD du may return non-zero for unreadable descendants while still
-			// printing a useful aggregate for the requested root. Use that best
-			// effort total instead of falling back to a much slower recursive walk.
-			if len(fields) == 0 {
-				if stderr.Len() > 0 {
-					return 0, fmt.Errorf("du failed: %v, %s", runErr, stderr.String())
-				}
-				return 0, fmt.Errorf("du failed: %v", runErr)
-			}
+		if ctx.Err() != nil {
+			runErr = ctx.Err()
 		}
 		if len(fields) == 0 {
-			return 0, fmt.Errorf("du output empty")
+			if runErr != nil {
+				return 0, fmt.Errorf("du failed for %s: %w", target, runErr)
+			}
+			return 0, fmt.Errorf("du output empty for %s", target)
 		}
 		kb, parseErr := strconv.ParseInt(fields[0], 10, 64)
 		if parseErr != nil {
-			return 0, fmt.Errorf("failed to parse du output: %v", parseErr)
+			return 0, fmt.Errorf("failed to parse du output: %w", parseErr)
 		}
-		if kb <= 0 {
-			if runErr != nil {
-				return 0, fmt.Errorf("du failed: %v", runErr)
-			}
+		if kb < 0 {
 			return 0, fmt.Errorf("du size invalid: %d", kb)
+		}
+		// du exits non-zero when part of the tree is unreadable, but it still
+		// prints the aggregate for the part it could read. Keep the bytes *and*
+		// the failure: dropping the bytes makes every caller re-measure the same
+		// tree with a much slower recursive walk, and dropping the error hides
+		// from the caller that the number is not a full measurement.
+		if runErr != nil {
+			return kb * 1024, fmt.Errorf("du incomplete for %s: %w", target, runErr)
 		}
 		return kb * 1024, nil
 	}
 
 	// When excluding a path (e.g., ~/Library), subtract only that exact directory instead of ignoring every "Library"
 	if excludePath != "" {
-		if size, err := getDirectorySizeFromDuSkippingImmediateChild(path, excludePath, runDuSize); err == nil {
-			return size, nil
+		if filepath.Dir(filepath.Clean(excludePath)) == filepath.Clean(path) {
+			return getDirectorySizeFromDuSkippingImmediateChild(path, excludePath, runDuSize)
 		}
 
 		totalSize, err := runDuSize(path)
@@ -1156,26 +1167,16 @@ func getDirectorySizeFromDuSkippingImmediateChild(path string, excludePath strin
 	}
 
 	var total int64
+	var failures scanFailures
 	if info, err := os.Lstat(path); err == nil {
 		atomic.AddInt64(&total, getActualFileSize(path, info))
+	} else {
+		failures.record(err)
 	}
 
 	var wg sync.WaitGroup
-	var firstErr error
-	var errMu sync.Mutex
 	workerCount := min(max(runtime.NumCPU()*2, 2), 8)
 	sem := make(chan struct{}, workerCount)
-
-	recordErr := func(err error) {
-		if err == nil {
-			return
-		}
-		errMu.Lock()
-		defer errMu.Unlock()
-		if firstErr == nil {
-			firstErr = err
-		}
-	}
 
 	for _, entry := range entries {
 		fullPath := filepath.Join(path, entry.Name())
@@ -1186,6 +1187,7 @@ func getDirectorySizeFromDuSkippingImmediateChild(path string, excludePath strin
 		if entry.Type()&fs.ModeSymlink != 0 || !entry.IsDir() {
 			info, err := entry.Info()
 			if err != nil {
+				failures.record(err)
 				continue
 			}
 			atomic.AddInt64(&total, getActualFileSize(fullPath, info))
@@ -1197,20 +1199,14 @@ func getDirectorySizeFromDuSkippingImmediateChild(path string, excludePath strin
 			defer func() { <-sem }()
 
 			size, err := runDuSize(fullPath)
-			if err != nil {
-				recordErr(err)
-				return
-			}
+			failures.record(err)
 			atomic.AddInt64(&total, size)
 		})
 	}
 
 	wg.Wait()
 
-	if firstErr != nil {
-		return 0, firstErr
-	}
-	return total, nil
+	return total, failures.first
 }
 
 func getDirectoryLogicalSizeWithExclude(path string, excludePath string) (int64, error) {
