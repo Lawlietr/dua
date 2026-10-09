@@ -430,6 +430,67 @@ func TestOverviewPendingSizeUsesScanningSpinner(t *testing.T) {
 	}
 }
 
+// A measurement failure can be longer than the header leaves room for. Letting
+// it wrap would push the prompt and spinner onto a second row and shift every
+// entry under it, so an over-long status moves to its own line and is cut.
+func TestOverviewStatusLineStaysInsideTheTerminal(t *testing.T) {
+	stripColors := strings.NewReplacer(
+		colorGray, "", colorCyan, "", colorReset, "", colorBold, "",
+		colorPurpleBold, "",
+	)
+	longStatus := "Partial size: " + strings.Repeat("unmeasurable ", 8) + "(Permission denied)"
+
+	for _, width := range []int{60, 80, 120} {
+		m := model{
+			isOverview:       true,
+			overviewScanning: true,
+			path:             "/",
+			width:            width,
+			height:           24,
+			status:           longStatus,
+			totalSize:        4 << 30,
+			scanState:        scanPartial,
+			entries: []dirEntry{
+				{Name: "usr", Path: "/usr", Size: 4 << 30, IsDir: true, State: scanPartial},
+				{Name: "var", Path: "/var", Size: -1, IsDir: true},
+			},
+		}
+		view := m.View()
+		for _, rawLine := range strings.Split(view, "\n") {
+			line := stripColors.Replace(rawLine)
+			if !strings.Contains(line, "Select a location to explore:") {
+				continue
+			}
+			if got := displayWidth(line); got > width {
+				t.Fatalf("spinner line at width %d is %d columns wide: %q", width, got, line)
+			}
+		}
+		if strings.Contains(stripColors.Replace(view), longStatus) {
+			t.Fatalf("status longer than %d columns must be truncated, got:\n%s", width, view)
+		}
+	}
+
+	// A status that fits must still read as one line: splitting the header every
+	// time makes the common case look broken.
+	m := model{
+		isOverview:       true,
+		overviewScanning: true,
+		path:             "/",
+		width:            100,
+		height:           24,
+		status:           "Partial size: usr (access denied)",
+		totalSize:        4 << 30,
+		scanState:        scanPartial,
+		entries: []dirEntry{
+			{Name: "usr", Path: "/usr", Size: 4 << 30, IsDir: true, State: scanPartial},
+			{Name: "var", Path: "/var", Size: -1, IsDir: true},
+		},
+	}
+	if !strings.Contains(stripColors.Replace(m.View()), "Select a location to explore:  "+spinnerFrames[0]+" Partial size: usr (access denied)") {
+		t.Fatalf("a status that fits must stay inline, got:\n%s", stripColors.Replace(m.View()))
+	}
+}
+
 func TestViewKeepsCachedEntriesWhileRefreshing(t *testing.T) {
 	m := model{
 		path:             "/tmp/project/child",
@@ -2205,6 +2266,40 @@ func TestOverviewPartialMeasurementStillShowsItsBytes(t *testing.T) {
 	}
 }
 
+// A failed overview row has to explain itself in the header, where the raw
+// command is the wrong size: "du incomplete for /home/... : exit status 1" wraps
+// the line and names nothing the user can act on.
+func TestOverviewMeasurementFailureNamesTheCause(t *testing.T) {
+	m := newTickLoopTestModel(t, true)
+	// The reason line is what shows while other roots are still in flight: once
+	// the schedule moves on, the progress line replaces it. Keeping every other
+	// slot busy is the state a user actually reads this in.
+	m.overviewScanningSet = map[string]bool{}
+	for i := 1; i <= maxConcurrentOverview && i < len(m.entries); i++ {
+		m.overviewScanningSet[m.entries[i].Path] = true
+	}
+	entry := m.entries[0]
+	raw := fmt.Errorf("du incomplete for %s: %w", entry.Path,
+		&duError{cause: errors.New("exit status 1"), reason: "Permission denied"})
+
+	updated, _ := m.Update(overviewSizeMsg{Path: entry.Path, Index: 0, Size: 512, Err: raw})
+	failed, ok := updated.(model)
+	if !ok {
+		t.Fatalf("expected model, got %T", updated)
+	}
+
+	want := fmt.Sprintf("Partial size: %s (Permission denied)", entry.Name)
+	if failed.status != want {
+		t.Fatalf("failed row status = %q, want %q", failed.status, want)
+	}
+	if strings.Contains(failed.status, "exit status 1") {
+		t.Fatalf("the raw command must not reach the header: %q", failed.status)
+	}
+	if failed.entries[0].State != scanPartial {
+		t.Fatalf("a measurement that lost bytes to an unreadable directory = %s, want partial", failed.entries[0].State)
+	}
+}
+
 // Once the overview is finished its status line must carry the coverage: "Ready"
 // over a lower bound claims more than was measured.
 func TestFinishedOverviewStatusCarriesPartialCoverage(t *testing.T) {
@@ -3608,6 +3703,70 @@ func TestDuStderrNamesUnreadableDirectories(t *testing.T) {
 	}
 	if w.hasPermissionDenied() {
 		t.Error("a denial recorded past the cap must not be reported")
+	}
+}
+
+// The same stderr also carries the one line a user can read. GNU and BSD phrase
+// it differently and both put the path before the reason, so the parse has to
+// take the last separator and leave a path containing colons out of the result.
+func TestDuDiagnosticReasonPullsTheStrerror(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want string
+	}{
+		{name: "gnu", text: "du: cannot read directory '/var/lib/registry': Permission denied\n", want: "Permission denied"},
+		{name: "bsd", text: "du: /var/lib/registry: Permission denied\n", want: "Permission denied"},
+		{name: "path with a colon", text: "du: cannot read '/a: b': No such file or directory\n", want: "No such file or directory"},
+		{name: "noise before it", text: "warning: something\ndu: cannot access '/x': Input/output error\n", want: "Input/output error"},
+		{name: "no reason to show", text: "du: something odd\n", want: ""},
+		{name: "empty", text: "", want: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := duDiagnosticReason([]byte(tc.text)); got != tc.want {
+				t.Fatalf("duDiagnosticReason(%q) = %q, want %q", tc.text, got, tc.want)
+			}
+		})
+	}
+}
+
+// Adding a display reason must not change what a failure means: cache reuse is
+// decided by isPermissionFailure, so the wrapper has to keep the chain intact.
+func TestDuErrorKeepsClassificationUnderUnwrap(t *testing.T) {
+	// The shape the scanner actually produces: the process failure, wrapped with
+	// the reason, then marked up with the denial read off stderr. Cache reuse is
+	// decided through both layers.
+	permission := fmt.Errorf("du incomplete for /locked: %w", &duError{
+		cause:  fmt.Errorf("exit status 1: %w", fs.ErrPermission),
+		reason: "Permission denied",
+	})
+	if !isPermissionFailure(permission) {
+		t.Fatalf("the wrapper must not hide a denial from the cache decision: %v", permission)
+	}
+	if isTransientFailure(permission) {
+		t.Fatalf("a denial repeats on every visit, so it is not transient: %v", permission)
+	}
+	if got := measurementErrorReason(permission); got != "access denied" {
+		t.Fatalf("a denial must be named as such, got %q", got)
+	}
+
+	failure := &duError{cause: errors.New("exit status 1"), reason: "Permission denied"}
+	joined := errors.Join(failure, fs.ErrPermission)
+	if !isPermissionFailure(joined) {
+		t.Fatalf("a named denial must still read as a permission failure: %v", joined)
+	}
+	if isTransientFailure(joined) {
+		t.Fatalf("a permission denial repeats on every visit, so it is not transient: %v", joined)
+	}
+	if !errors.Is(&duError{cause: context.DeadlineExceeded, reason: "Resource busy"}, context.DeadlineExceeded) {
+		t.Fatal("a timeout must still read as a timeout through the wrapper")
+	}
+	if got := (&duError{cause: errors.New("exit status 1")}).Error(); got != "exit status 1" {
+		t.Fatalf("an unnamed failure must keep the cause text, got %q", got)
+	}
+	if got := failure.Error(); !strings.HasSuffix(got, ": Permission denied") {
+		t.Fatalf("a named failure must show its reason, got %q", got)
 	}
 }
 

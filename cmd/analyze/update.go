@@ -459,10 +459,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if m.inOverviewMode() {
+			name := ""
 			for i := range m.entries {
 				if m.entries[i].Path == msg.Path {
 					m.entries[i].Size = msg.Size
 					m.entries[i].State = state
+					name = m.entries[i].Name
 					break
 				}
 			}
@@ -479,7 +481,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if msg.Size > 0 {
 					label = "Partial size"
 				}
-				m.status = fmt.Sprintf("%s for %s: %v", label, displayPath(msg.Path), msg.Err)
+				if name == "" {
+					name = displayPath(msg.Path)
+				}
+				// The overview screen lists these roots by name, so the name is the
+				// shortest unambiguous label; the reason is what the user can act on.
+				m.status = fmt.Sprintf("%s: %s (%s)", label, name, measurementErrorReason(msg.Err))
 			}
 
 			cmd := m.scheduleOverviewScans()

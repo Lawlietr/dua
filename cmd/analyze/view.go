@@ -25,17 +25,13 @@ func (m model) View() string {
 		fmt.Fprintf(&b, "%sAnalyze Disk%s%s\n", colorPurpleBold, colorReset, freeLabel)
 		if m.overviewScanning {
 			if allOverviewEntriesPending(m.entries) {
-				fmt.Fprintf(&b, "%sSelect a location to explore:%s  ", colorGray, colorReset)
-				fmt.Fprintf(&b, "%s%s%s%s Analyzing disk usage...\n\n",
-					colorCyan, colorBold, spinnerFrames[m.spinner], colorReset)
+				m.writeOverviewStatus(&b, "Analyzing disk usage...")
 			} else {
-				fmt.Fprintf(&b, "%sSelect a location to explore:%s  ", colorGray, colorReset)
-				fmt.Fprintf(&b, "%s%s%s%s %s\n\n", colorCyan, colorBold, spinnerFrames[m.spinner], colorReset, m.status)
+				m.writeOverviewStatus(&b, m.status)
 			}
 		} else {
 			if hasPendingOverviewEntries(m.entries) {
-				fmt.Fprintf(&b, "%sSelect a location to explore:%s  ", colorGray, colorReset)
-				fmt.Fprintf(&b, "%s%s%s%s %s\n\n", colorCyan, colorBold, spinnerFrames[m.spinner], colorReset, m.status)
+				m.writeOverviewStatus(&b, m.status)
 			} else {
 				fmt.Fprintf(&b, "%sSelect a location to explore:%s\n\n", colorGray, colorReset)
 			}
@@ -350,6 +346,21 @@ func (m model) View() string {
 		fmt.Fprintf(&b, "%s%s%s%s\n", colorGray, pad, versionText, colorReset)
 	}
 	return b.String()
+}
+
+// writeOverviewStatus renders the prompt and spinner line. A status longer than
+// the columns left inline would wrap the header and shift every row under it, so
+// an over-long one moves to its own line and is truncated in the middle instead.
+func (m model) writeOverviewStatus(b *strings.Builder, status string) {
+	const prompt = "Select a location to explore:"
+	spinner := spinnerFrames[m.spinner]
+	if m.width > 0 && displayWidth(prompt)+2+displayWidth(spinner)+1+displayWidth(status) > m.width {
+		fmt.Fprintf(b, "%s%s%s\n", colorGray, prompt, colorReset)
+		status = truncateMiddle(status, max(0, m.width-displayWidth(spinner)-1))
+	} else {
+		fmt.Fprintf(b, "%s%s%s  ", colorGray, prompt, colorReset)
+	}
+	fmt.Fprintf(b, "%s%s%s%s %s\n\n", colorCyan, colorBold, spinner, colorReset, status)
 }
 
 func allOverviewEntriesPending(entries []dirEntry) bool {

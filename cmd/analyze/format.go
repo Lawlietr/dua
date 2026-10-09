@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -266,6 +268,31 @@ func formatUnusedTime(lastAccess time.Time) string {
 	}
 
 	return ""
+}
+
+// measurementErrorReason names why a measurement failed, in the few characters
+// a status line can afford. The raw error is the wrong size for a header: a
+// failed `du` over a large tree reports "exit status 1" plus the command, which
+// tells the user nothing they can act on. Classification comes first so the
+// wording stays stable across du versions; only then is du's own text used.
+func measurementErrorReason(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timed out"
+	case errors.Is(err, context.Canceled):
+		return "cancelled"
+	case isPermissionFailure(err):
+		return "access denied"
+	}
+	var duFailure *duError
+	if errors.As(err, &duFailure) && duFailure.reason != "" {
+		return duFailure.reason
+	}
+	var pathFailure *os.PathError
+	if errors.As(err, &pathFailure) {
+		return pathFailure.Err.Error()
+	}
+	return "read error"
 }
 
 // measuredSizeLabel renders a size with its coverage. A partial total is a real

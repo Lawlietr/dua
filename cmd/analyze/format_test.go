@@ -1,13 +1,73 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"io/fs"
 	"math"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
+
+// A measurement failure lands on one status line in the overview header, so the
+// reason has to name the cause rather than quote the command. A raw "exit status
+// 1" says nothing useful; the classification comes first so du's own wording can
+// never be the only thing a user can read.
+func TestMeasurementErrorReasonNamesTheCause(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "timeout", err: context.DeadlineExceeded, want: "timed out"},
+		{name: "cancelled", err: context.Canceled, want: "cancelled"},
+		{name: "wrapped timeout", err: fmt.Errorf("du failed: %w", context.DeadlineExceeded), want: "timed out"},
+		{
+			name: "permission wins over the captured text",
+			err:  &fs.PathError{Op: "stat", Path: "/locked", Err: syscall.EACCES},
+			want: "access denied",
+		},
+		{
+			name: "du's own wording when nothing else matches",
+			err:  &duError{cause: errors.New("exit status 1"), reason: "No such file or directory"},
+			want: "No such file or directory",
+		},
+		{
+			name: "an unnamed du failure keeps the fallback",
+			err:  &duError{cause: errors.New("exit status 1")},
+			want: "read error",
+		},
+		{
+			name: "a plain stat failure reports its errno",
+			err:  &fs.PathError{Op: "open", Path: "/gone", Err: syscall.ENOENT},
+			want: "no such file or directory",
+		},
+		{name: "anything else", err: errors.New("boom"), want: "read error"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := measurementErrorReason(tc.err); got != tc.want {
+				t.Fatalf("measurementErrorReason = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// The reason exists so a failure can be named next to a spinner in a narrow
+// terminal, so an untranslated command string would defeat it.
+func TestMeasurementErrorReasonStaysShort(t *testing.T) {
+	raw := fmt.Errorf("du incomplete for %s: %w", strings.Repeat("/very/long/path", 20),
+		&duError{cause: errors.New("exit status 1"), reason: "Permission denied"})
+	if got := measurementErrorReason(raw); displayWidth(got) > 32 {
+		t.Fatalf("reason is too long for a status line (%d columns): %q", displayWidth(got), got)
+	}
+}
 
 func TestSpinnerFramesHaveSingleColumnWidth(t *testing.T) {
 	for _, frame := range spinnerFrames {

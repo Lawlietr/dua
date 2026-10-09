@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode"
 )
 
 var spotlightQueryRunner = func(ctx context.Context, root, query string) ([]byte, error) {
@@ -1164,6 +1165,49 @@ func containsPermissionDeniedText(text string) bool {
 	return strings.Contains(strings.ToLower(text), "permission denied")
 }
 
+// duError carries a short diagnostic next to the process status. Unwrap keeps the
+// permission, cancellation and exit-status matching the callers use (see
+// isPermissionFailure), so showing what du complained about cannot change how a
+// failure is classified - and an unreadable directory says so on stderr only,
+// which is where the reason comes from.
+type duError struct {
+	cause  error
+	reason string
+}
+
+func (e *duError) Error() string {
+	if e.reason == "" {
+		return e.cause.Error()
+	}
+	return fmt.Sprintf("%v: %s", e.cause, e.reason)
+}
+
+func (e *duError) Unwrap() error { return e.cause }
+
+// duDiagnosticReason pulls the strerror out of the first line du complains on.
+// GNU writes "du: cannot read '/a/b': Permission denied" and BSD writes
+// "du: /a/b: Permission denied"; both leave the reason after the last ": ",
+// which keeps a path containing colons out of the diagnostic. Control characters
+// are folded to spaces because this text ends up on one status line.
+func duDiagnosticReason(stderr []byte) string {
+	for _, line := range strings.Split(string(stderr), "\n") {
+		separator := strings.LastIndex(line, ": ")
+		if !strings.HasPrefix(line, "du: ") || separator < len("du: ") {
+			continue
+		}
+		reason := strings.TrimSpace(strings.Map(func(r rune) rune {
+			if unicode.IsControl(r) || unicode.IsSpace(r) {
+				return ' '
+			}
+			return r
+		}, line[separator+2:]))
+		if reason != "" {
+			return reason
+		}
+	}
+	return ""
+}
+
 func getDirectorySizeFromDuWithExcludeAndIgnores(ctx context.Context, path string, excludePath string, ignoreNames []string) (int64, error) {
 	// Validate paths.
 	if err := validatePath(path); err != nil {
@@ -1207,6 +1251,11 @@ func getDirectorySizeFromDuWithExcludeAndIgnores(ctx context.Context, path strin
 		fields := strings.Fields(stdout.String())
 		if ctx.Err() != nil {
 			runErr = ctx.Err()
+		}
+		// A cancelled measurement is already classified by the context; only a
+		// real du failure carries its own reason.
+		if runErr != nil && ctx.Err() == nil {
+			runErr = &duError{cause: runErr, reason: duDiagnosticReason(stderr.buf.Bytes())}
 		}
 		if len(fields) == 0 {
 			if runErr != nil {
