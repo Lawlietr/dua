@@ -707,7 +707,11 @@ func scanSubdirWithCache(ctx context.Context, root string, largeFileChan chan<- 
 		// subtrees are not persisted at all: see shouldPersistSubdirCache.
 		if !result.dedupedHardlink && shouldPersistSubdirCache(result) {
 			_ = saveCacheToDiskWithOptions(publication, root, result, true)
-		} else if cachePolicy == scanCacheBypass {
+		} else if cachePolicy == scanCacheBypass && result.State == scanComplete {
+			// Dropping the stored measurement only makes sense once this pass has
+			// measured the subtree itself. A partial pass knows less than the record
+			// already on disk, and that record is the only one covering bytes access
+			// has since stopped allowing; it expires on its own otherwise.
 			_ = removeCacheEntryForScan(publication, root)
 		}
 		return result

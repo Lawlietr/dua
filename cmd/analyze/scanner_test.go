@@ -450,6 +450,100 @@ func TestScanUnreadableDescendantPreservesCoverageAndGoodCache(t *testing.T) {
 	}
 }
 
+// A refresh (the R key) re-measures everything and reads no cache. It clears the
+// stored sizes for the directory and its direct children first, so the entries
+// that a refresh can silently destroy are the deeper ones. For a subtree it
+// cannot finish, the fresh pass knows strictly less than the record already on
+// disk, so dropping that record throws away the only measurement of the bytes
+// that were readable while access allowed them - and the next scan has to walk
+// the subtree again to get them back. The last section pins that the rule is
+// conditional rather than a blanket "never drop": a refresh that did finish a
+// subtree too small to cache must still clear its stale entry.
+//
+// This test deliberately compares no byte counts, so it does not need
+// skipIfBlockAccountingUnreliable - it still runs on the filesystems where the
+// coverage test above has to go quiet.
+func TestRefreshOverUnreadableSubtreeKeepsItsMeasuredCache(t *testing.T) {
+	if runTestWithoutPrivileges(t) {
+		return // the re-executed child runs the body as a non-root uid
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, "root")
+	// Two levels down, because that is the depth a refresh leaves alone: R drops
+	// the entries for the scanned directory and its direct children itself, so a
+	// nested subtree is where the measurement can be lost.
+	deep := filepath.Join(root, "child", "deep")
+	locked := filepath.Join(deep, "locked")
+	writeFileWithSize(t, filepath.Join(deep, "readable"), 4096)
+	writeFileWithSize(t, filepath.Join(locked, "hidden"), 1<<20)
+
+	// Only the refresh policy reaches this bookkeeping: a normal scan would reuse
+	// the stored subtree instead of measuring it again.
+	refresh := func(scanRoot string) scanResult {
+		t.Helper()
+		var files, dirs, bytes int64
+		current := &atomic.Value{}
+		current.Store("")
+		result, err := scanPathConcurrentWithLimiter(context.Background(), scanRoot, &files, &dirs, &bytes,
+			current, false, 0, nil, scanCacheBypass, newScanPublication(context.Background(), nil))
+		if err != nil {
+			t.Fatalf("scan %s: %v", scanRoot, err)
+		}
+		return result
+	}
+	stored := func(path string) bool {
+		t.Helper()
+		cachePath, err := getCachePath(path)
+		if err != nil {
+			t.Fatalf("cache path for %s: %v", path, err)
+		}
+		_, err = os.Stat(cachePath)
+		if err == nil {
+			return true
+		}
+		if !os.IsNotExist(err) {
+			t.Fatalf("stat the cache file for %s: %v", path, err)
+		}
+		return false
+	}
+
+	measured := refresh(deep)
+	if measured.State != scanComplete {
+		t.Fatalf("subtree coverage while access allows it = %s, want complete", measured.State)
+	}
+	// The subtree stays under the store-what-worth-caching threshold, which is
+	// what routes it to the drop side of the branch; seed the entry the way a
+	// larger subtree would already have it on disk.
+	if shouldPersistSubdirCache(measured) {
+		t.Fatal("fixture is large enough to be stored by itself, so it no longer reaches the branch under test")
+	}
+	if err := saveCacheToDisk(deep, measured); err != nil {
+		t.Fatalf("seed the subtree measurement: %v", err)
+	}
+	if !stored(deep) {
+		t.Fatal("the seeded subtree measurement is not on disk")
+	}
+
+	lockDirFromReader(t, locked)
+	if partial := refresh(root); partial.State != scanPartial {
+		t.Fatalf("refresh over the locked tree = %s, want partial", partial.State)
+	}
+	if !stored(deep) {
+		t.Fatal("a refresh that could not finish the subtree deleted the only measurement of its readable bytes")
+	}
+
+	if err := os.Chmod(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if complete := refresh(root); complete.State != scanComplete {
+		t.Fatalf("refresh over the unlocked tree = %s, want complete", complete.State)
+	}
+	if stored(deep) {
+		t.Fatal("a refresh that finished the subtree kept a stale entry for it")
+	}
+}
+
 // A folded directory is sized with du instead of being walked, so its coverage
 // has to come from the du result itself: the row keeps the bytes du could
 // measure and says they are a lower bound, and the tree it belongs to is not
