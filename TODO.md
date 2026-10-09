@@ -184,18 +184,27 @@ Closed by `C-3` (2026-10-09). This is the only P0 work left, and it is procedure
 
 `F-1` (10m) is **closed** (2026-10-09), so no code item gates the tag. It removed `omitempty` from `total_files`: a scan that counted zero files now says `total_files: 0` instead of dropping the key — the same false silence this chain removed for sizes, sitting in the field next to `total_size` (which never had `omitempty`). Verified on the shipped binary: an empty directory yields `total_files: 0` with `scan_status: complete`, and `/etc` still yields 796 files / 1,394,335 B — identical to the `D-1` measurement, so the change is additive only.
 
-### Procedure (not a card; ~10m of wall time plus CI)
+### Procedure — executed 2026-10-09
 
-1. `make check` on the branch head.
-2. `git checkout main && git merge --ff-only port/a-layer-upstream` — verified 0 behind `main`, so it is a fast-forward.
-3. `git push origin main`, then wait for `.github/workflows/test.yml` to go green on `main`. This is the first CI pass over these commits — checked, not assumed: no PR exists for the branch head and the GitHub API reports zero workflow runs for its SHA. (`test.yml` triggers on `Linux-DEV`/`main`/PRs only, so a topic branch never gets CI by itself.) Local `make check` is the same command set on a different toolchain image, not a substitute.
-4. `git tag v0.3.0 && git push origin v0.3.0` → `release.yml` builds linux/amd64 + arm64 and opens the release with the workflow's fixed body plus an auto-generated `**Full Changelog**: .../compare/v0.2.0...v0.3.0` link. The v0.2.0 release body shows exactly what that produces: the install template, the compare link, then a hand-written darwin addendum.
-5. Edit the release body by hand and paste the draft below. The workflow body is version-agnostic on purpose, so version-specific text can only be added after the release exists — that is how v0.2.0's darwin section got there.
+1. `make check` on the branch head → green (`cmd/analyze`, `cmd/status`, `internal/units`), plus `make build`.
+2. `git checkout main && git merge --ff-only port/a-layer-upstream` → fast-forward, 40 commits, `main` = `e71986ea`. Verified 0 behind first, so no merge commit was needed.
+3. `git push origin main`, then polled `test.yml` on `main` until `completed / success` (3 polls, ~1 min). This was the first CI pass over these commits — checked, not assumed: no PR exists for the branch and `test.yml` triggers on `Linux-DEV`/`main`/PRs only, so a topic branch never gets CI by itself. Local `make check` is the same command set on a different toolchain image, not a substitute.
+4. `git tag -a v0.3.0 -m "dua v0.3.0" && git push origin v0.3.0` → annotated tag (same shape as `v0.2.0`), tag object `47c9d208` → target `e71986ea`. `release.yml` created release id 407826231 with the workflow's fixed body plus the auto `**Full Changelog**: .../compare/v0.2.0...v0.3.0` link, and 4 assets (linux amd64/arm64 tarball + `.sha256`).
+5. **Still manual:** paste the notes below into the release body. The workflow body is version-agnostic on purpose, so version-specific text can only be added after the release exists — that is how v0.2.0's darwin section got there. Chosen approach is *manual per release* (no automation): auto-generated GitHub notes list merged PRs, and this repo pushes to branches directly, so auto-notes would have produced an empty list.
+6. **Still manual:** dispatch `upload-darwin.yml` with `version=v0.3.0`, `confirm_tag=v0.3.0`, `ref=main`. Until it runs, the macOS install line published in both READMEs 404s — see the pitfall below.
 
-Two pitfalls, both checked rather than assumed:
+Four pitfalls, each checked rather than assumed:
 
 - This repo carries inherited upstream tags (`V1.58.0`, `v1.30.0-windows`, …). `release.yml` triggers on lowercase `v*`, so pushing upstream tags to origin would fire release builds for upstream versions. Never bulk-push upstream tags.
 - `releases/latest` — the install URL in both READMEs and inside `dua update` — resolves among **published releases**, not tags, so those upstream tags do not shadow dua's tarballs.
+- `releases/latest/download/<asset>` resolves **inside the newest release only**; there is no fallback to an older release that had the asset. Measured: `latest/download/dua-darwin-arm64.tar.gz` → 200 while v0.2.0 is newest, but a name absent from the newest release redirects to `releases/download/v0.2.0/<name>` and 404s. So a release without darwin assets **breaks the macOS install command on `main`** until `upload-darwin` runs for it. This is why `e71986ea` parameterized that workflow: it had v0.2.0 hard-coded in the upload guard, the `gh release` commands and the notes rebuild, so it could only ever serve v0.2.0.
+- `main` was 10 commits ahead of `v0.2.0` before this merge (the darwin/platform work: `eee2f39f`…`b56f7561`), and those were never released. So the published range `v0.2.0..v0.3.0` is **50 commits**, not the 40 in the merge, and the release notes must cover that older work too. A release notes list derived only from "what this branch did" would have been incomplete.
+
+### Release record (as published)
+
+Verified against the **downloaded artifacts**, not the local build: both tarballs match their published `.sha256`; `dua version` from the linux/amd64 tarball reports `v0.3.0` + commit `e71986ea`; `dua status --json` and `dua analyze --json` carry `"version": "v0.3.0"`; `/etc` → `total_files: 796`, `total_size: 1394335` (byte-identical to the `D-1` baseline, so `F-1` is additive); an empty directory → `total_files: 0`. Checksums: `664319a3…4e46` amd64, `f379555b…5e5dc` arm64.
+
+The body GitHub generated is the template + compare link only; the human notes below are what to paste.
 
 ### Release notes draft (paste into the release body after tagging)
 
