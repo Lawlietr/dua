@@ -225,7 +225,7 @@ Categories worth reviewing (full hashes and ordering in [TODO.md](TODO.md)); the
 | 2025-08-28 | B: Analyze snapshot | `a6d59d49`, `03311d45`, `e9f52994` (+ older hashes `a300f00c`…`608d5d04` now stale) | **REVIEW** | May depend on snapshot infra; verify self-containment against current HEAD. |
 | 2025-08-28 | C: UI/UX | `99a9471d`, `d534c30b`, `8a2b84b1` (+ older hashes `785b84c4`…`1e0d23c9` now stale) | **PARTLY PORTED 2026-10-09** | `d534c30b` superseded upstream by `6aa93263`/`19f14e40`, both ported; `8a2b84b1` is a no-op for dua (bash `lib/core/ui.sh`). Only `99a9471d` remains. |
 
-**Current policy**: Prefer small, self-contained, Linux-relevant fixes ported as a batch on a feature branch (never directly to `main`). The partial-coverage chain is the next batch. Re-derive all upstream hashes from current `upstream/main` before porting, and record the **upstream** hash next to the dua commit that ports it — the 2026-10-09 correction above shows what happens when only local hashes are logged. When an upstream change touches `mo-applets/`, port the equivalent into `cmd/analyze/` / `cmd/status/` instead of skipping it: the two trees diverged, so the upstream path is not the porting target.
+**Current policy**: Prefer small, self-contained, Linux-relevant fixes ported as a batch on a feature branch (never directly to `main`). The partial-coverage chain is the next batch, worked as time-boxed cards (≤ 90 minutes each, each ending green and committed) rather than one sitting — the card breakdown is in [TODO.md](TODO.md). Re-derive all upstream hashes from current `upstream/main` before porting, and record the **upstream** hash next to the dua commit that ports it — the 2026-10-09 correction above shows what happens when only local hashes are logged. When an upstream change touches `mo-applets/`, port the equivalent into `cmd/analyze/` / `cmd/status/` instead of skipping it: the two trees diverged, so the upstream path is not the porting target.
 
 ### Decision Checklist for Cherry-picking
 
@@ -252,5 +252,5 @@ If any answer is "no", skip the commit.
 - [x] Include version in `dua status` and `dua analyze` JSON output.
 - [x] Add `dua update` command to check GitHub and update in-place.
 - [x] Port A-layer upstream fixes (CLI help, braille spinner, default-route tunnel accounting, partial one-shot JSON, overview concurrency budget) — branch `port/a-layer-upstream`.
-- [ ] Port the partial-coverage chain (analyze partial coverage tracking) — the next batch; see [TODO.md](TODO.md).
+- [ ] Port the partial-coverage chain (analyze partial coverage tracking) — the next batch, worked one time-boxed card at a time (`S0-1`…`D-2` in [TODO.md](TODO.md)); do not attempt it as a single sitting.
 - [ ] Fold darwin/arm64 into `release.yml`'s build matrix (with macos smoke gate) and delete `upload-darwin.yml`.
