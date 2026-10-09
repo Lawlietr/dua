@@ -63,6 +63,7 @@ cp bin/dua-analyze bin/dua-status /usr/local/bin/
   - 系統概覽（`/usr`、`/opt`、`/var`、`/home`）加上隱藏空間洞察（npm、Go build、pip、Gradle、JetBrains 快取、資源回收筒、舊的下載）
   - 逐層下鑽導覽，含目錄比例條與最近存取提示
   - Top-files（T）檢視、即時掃描回饋（可切換排序模式）、磁碟用量快取
+  - 帶有涵蓋範圍標示的大小：跳過不可讀子樹的量測會被標為**下限**而非總值，TUI 與 `--json` 皆然
   - `--json` 輸出供自動化使用
 - **`dua status`** — 精簡健康儀表板：
   - CPU、記憶體、磁碟、溫度（hwmon）、硬體型號、OS 資訊與 top 程序
@@ -77,7 +78,7 @@ cp bin/dua-analyze bin/dua-status /usr/local/bin/
 - 帶 `PATH`：掃描該目錄。
 - 按鍵：`↑↓←→` 導覽、`Enter` 下鑽、`Esc` 返回、`R` 重新整理、`/` 過濾、`T` Top 檔案、`O` 用 `xdg-open` 開啟、`P` 預覽、`F` 在檔案管理員中顯示、`Q`/`Ctrl+C` 離開。
 - 旗標：`--json` 以 JSON 輸出掃描結果。
-- 涵蓋範圍：JSON 輸出在文件層與每個條目都帶有 `scan_status`（`complete`、`partial`、`unavailable`），因此跳過不可讀子樹的 `total_size` 會被理解為下限，而非總值。互動介面只保留最大的 30 個條目，因此 dua 無法量測的條目可能不在清單中，而總值仍會標示 `partial`；`--json` 則列出掃描看到的全部條目。恢復讀取權限後按 `R` 重新讀取該目錄，缺失的位元組就會出現。
+- 涵蓋範圍：JSON 輸出在文件層與每個條目都帶有 `scan_status`（`complete`、`partial`、`unavailable`），因此跳過不可讀子樹的 `total_size` 會被理解為下限，而非總值。TUI 中的下限大小會帶有 `+`（例如 `739.6 MB+`），而部分量測的條目原本顯示比例的位置會顯示 `--`，因為下限的百分比並不是百分比；完整量測到的條目仍顯示其確切數值與比例。互動介面只保留最大的 30 個條目，因此 dua 無法量測的條目可能不在清單中，而總值仍會標示 `partial`；`--json` 則列出掃描看到的全部條目。恢復讀取權限後按 `R` 重新讀取該目錄，缺失的位元組就會出現。
 
 環境變數：`DUA_ANALYZE_PATH` 在未指定 PATH 時設定掃描目標；`DUA_ANALYZE_LIVE_SORT` 選擇即時掃描排序模式。
 
@@ -88,6 +89,8 @@ cp bin/dua-analyze bin/dua-status /usr/local/bin/
 ### `dua update`
 
 檢查 GitHub 是否有新版本，並就地更新（下載 tarball、驗證 SHA-256、替換二進位檔）。若安裝在系統目錄，需使用 `sudo` 執行。
+
+dua v0.3.0 更改了 `analyze` 的快取格式，使已快取的量測會保留自己的涵蓋範圍標記。因此從較舊版本更新後，每個目錄樹會多付出**一次**重新掃描：更新後第一次掃描該目錄會重新讀取，之後的掃描就又會由新的快取服務。
 
 ## 運作原理
 

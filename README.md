@@ -63,6 +63,7 @@ cp bin/dua-analyze bin/dua-status /usr/local/bin/
   - System overview (`/usr`, `/opt`, `/var`, `/home`) plus hidden-space insights (npm, Go build, pip, Gradle, JetBrains caches, Trash, old Downloads)
   - Drill-down navigation with per-directory bars and last-access hints
   - Top-files (T) view, live scan feedback with cursor sort modes, and a disk-usage cache
+  - Coverage-aware sizes: a measurement that skipped unreadable subtrees is labelled a lower bound instead of a total, in the TUI and in `--json`
   - `--json` output for automation
 - **`dua status`** — compact health dashboard:
   - CPU, memory, disk, thermal (hwmon), hardware model, OS info, and top processes
@@ -77,7 +78,7 @@ cp bin/dua-analyze bin/dua-status /usr/local/bin/
 - `PATH`: scans that directory.
 - Keys: `↑↓←→` navigate, `Enter` drill in, `Esc` back, `R` refresh, `/` filter, `T` Top files, `O` open with `xdg-open`, `P` preview, `F` reveal in file manager, `Q`/`Ctrl+C` quit.
 - Flags: `--json` prints the scan result as JSON.
-- Coverage: the JSON output carries `scan_status` (`complete`, `partial`, `unavailable`) on the document and on each entry, so a `total_size` that skipped an unreadable subtree reads as a lower bound instead of a total. The interactive list keeps the 30 largest entries, so an entry dua could not measure may fall outside it while the total still reads `partial`; `--json` lists every entry the scan saw. After you restore access, `R` re-reads the directory and the missing bytes appear.
+- Coverage: the JSON output carries `scan_status` (`complete`, `partial`, `unavailable`) on the document and on each entry, so a `total_size` that skipped an unreadable subtree reads as a lower bound instead of a total. In the TUI a lower-bound size carries a `+` (e.g. `739.6 MB+`) and a partially measured row shows `--` where its share would be, because a percentage of a lower bound is not a percentage; rows that were measured fully keep their exact numbers and shares. The interactive list keeps the 30 largest entries, so an entry dua could not measure may fall outside it while the total still reads `partial`; `--json` lists every entry the scan saw. After you restore access, `R` re-reads the directory and the missing bytes appear.
 
 Environment: `DUA_ANALYZE_PATH` sets the scan target when no PATH is given; `DUA_ANALYZE_LIVE_SORT` selects the live-scan sort mode.
 
@@ -88,6 +89,8 @@ Shows version and commit information.
 ### `dua update`
 
 Checks GitHub for a newer release and updates in-place (downloads tarball, verifies SHA-256, replaces binaries). Run with `sudo` if installed in a system directory.
+
+dua v0.3.0 changed the `analyze` cache format so a cached measurement keeps its coverage marker. Updating from an earlier release therefore costs one re-scan per tree: the first scan of a directory after updating re-reads it, later scans are served from the new cache again.
 
 ## How it Works
 
