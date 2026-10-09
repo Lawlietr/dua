@@ -1,23 +1,112 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 )
 
-// skipIfRoot guards tests whose behavior depends on permission-denied
-// semantics; the root user can read directories regardless of mode bits.
-func skipIfRoot(t *testing.T) {
+// permissionFixtureChildEnv marks the re-executed child, which already runs
+// without privileges. It also stops runWithoutPrivileges from recursing.
+const permissionFixtureChildEnv = "DUA_TEST_UNPRIVILEGED_CHILD"
+
+// runTestWithoutPrivileges makes the calling test run in a process that really
+// cannot read a mode-0000 directory, and reports whether the caller must stop.
+//
+// A chmod-0 fixture proves nothing to the root user, and both our CI and most
+// containers run tests as root, so such tests used to skip themselves and the
+// permission-denied code path went untested. Instead, re-run this package's own
+// test binary inside a private user namespace: outside the namespace we become
+// the overflow uid, DAC checks apply, and the fixture behaves like it does on a
+// normal user's machine. The parent reports the child's failure (or skip).
+//
+// Call it as the first line of the test, then keep writing the body as usual:
+//
+//	if runTestWithoutPrivileges(t) {
+//		return // the re-executed child runs the body
+//	}
+//
+// A test that already runs as a non-root user continues in process, so the
+// helper never weakens what the test asserts - it only moves it to a process
+// where the assertion means something.
+func runTestWithoutPrivileges(t *testing.T) bool {
 	t.Helper()
-	if os.Geteuid() == 0 {
-		t.Skip("running as root; permission-denied semantics unavailable")
+
+	if os.Getenv(permissionFixtureChildEnv) == "1" {
+		if os.Geteuid() == 0 {
+			t.Fatal("re-executed for the permission fixture but still root")
+		}
+		return false
 	}
+	if os.Geteuid() != 0 {
+		return false
+	}
+	if runtime.GOOS != "linux" {
+		t.Skipf("permission fixture needs Linux user namespaces (running as root on %s)", runtime.GOOS)
+	}
+	if _, err := exec.LookPath("unshare"); err != nil {
+		t.Skipf("cannot drop privileges for the permission fixture: %v", err)
+		return false
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("locate test binary: %v", err)
+	}
+	// The go tool creates its build temp dir 0700; a process outside the user
+	// namespace could not traverse it to reach the binary. Widen only the dirs
+	// inside TMPDIR, and only the ones above the already-world-readable binary.
+	for dir := filepath.Dir(exe); dir != "/" && isUnderTempDir(dir); dir = filepath.Dir(dir) {
+		if info, err := os.Stat(dir); err == nil && info.Mode().Perm()&0o055 != 0o055 {
+			if err := os.Chmod(dir, info.Mode().Perm()|0o055); err != nil {
+				t.Skipf("cannot make the test binary reachable to an unprivileged process: %v", err)
+			}
+		}
+	}
+
+	cmd := exec.Command("unshare", "-U", exe, "-test.run", "^"+regexp.QuoteMeta(t.Name())+"$", "-test.timeout=120s")
+	cmd.Env = append(os.Environ(), permissionFixtureChildEnv+"=1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("unprivileged run of %s failed: %v\n%s", t.Name(), err, output)
+	}
+	if bytes.Contains(output, []byte("--- SKIP")) {
+		t.Skip("the unprivileged run skipped itself")
+	}
+	return true
+}
+
+func isUnderTempDir(path string) bool {
+	tmp, err := filepath.EvalSymlinks(os.TempDir())
+	if err != nil {
+		return false
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(tmp, resolved)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, "..")
+}
+
+// lockDirFromReader makes a directory unreadable while it is still addressable
+// by name, and restores it when the test ends. Use it in a test guarded by
+// runTestWithoutPrivileges; as root the mode bits would block nothing.
+func lockDirFromReader(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatalf("chmod %s: %v", path, err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o755) })
 }
 
 // skipIfBlockAccountingUnreliable guards size assertions that rely on a file's
@@ -73,5 +162,47 @@ func skipIfFinderUnavailable(t *testing.T) {
 			reason = err.Error()
 		}
 		t.Skipf("Skipping Finder-dependent test, Finder unavailable: %s", reason)
+	}
+}
+
+// A mode-0000 directory proves nothing to the root user, so a permission test
+// that runs as root asserts nothing. This test pins both halves of the
+// mechanism, and it is expected to run (not skip) on a root CI runner: the
+// parent shows that root reads the fixture anyway, the re-executed child shows
+// that it cannot.
+func TestPermissionFixtureDropsReadAccess(t *testing.T) {
+	if os.Geteuid() == 0 && os.Getenv(permissionFixtureChildEnv) != "1" {
+		dir := t.TempDir()
+		locked := filepath.Join(dir, "locked")
+		if err := os.Mkdir(locked, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		lockDirFromReader(t, locked)
+		if _, err := os.ReadDir(locked); err != nil {
+			t.Fatalf("root is expected to read a mode-0000 directory, got %v", err)
+		}
+	}
+	if runTestWithoutPrivileges(t) {
+		return
+	}
+
+	dir := t.TempDir()
+	locked := filepath.Join(dir, "locked")
+	if err := os.Mkdir(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(locked, "inner"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lockDirFromReader(t, locked)
+
+	if _, err := os.Stat(locked); err != nil {
+		t.Fatalf("the directory must still be statable by name: %v", err)
+	}
+	if _, err := os.ReadDir(locked); !errors.Is(err, syscall.EACCES) {
+		t.Fatalf("expected permission-denied listing, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(locked, "inner")); !errors.Is(err, syscall.EACCES) {
+		t.Fatalf("expected permission-denied stat through the directory, got %v", err)
 	}
 }

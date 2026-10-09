@@ -2254,16 +2254,15 @@ func TestOverviewFilterKeepsUnmeasurableRows(t *testing.T) {
 // The walk-based sizing helpers must report coverage even when they kept bytes:
 // the caller needs the lower bound and the knowledge that it is one.
 func TestCalculateDirSizeKeepsBytesAndReportsIncomplete(t *testing.T) {
-	skipIfRoot(t)
+	if runTestWithoutPrivileges(t) {
+		return // the re-executed child runs the body as a non-root uid
+	}
 	skipIfBlockAccountingUnreliable(t)
 	home := t.TempDir()
 	locked := filepath.Join(home, "locked")
 	writeFileWithSize(t, filepath.Join(locked, "hidden"), 1<<20)
 	writeFileWithSize(t, filepath.Join(home, "readable"), 4096)
-	if err := os.Chmod(locked, 0); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	lockDirFromReader(t, locked)
 
 	var files, dirs, bytes int64
 	current := &atomic.Value{}
@@ -3554,7 +3553,9 @@ func TestLoadStaleCacheFromDiskExpiresByStaleTTL(t *testing.T) {
 }
 
 func TestScanPathPermissionError(t *testing.T) {
-	skipIfRoot(t)
+	if runTestWithoutPrivileges(t) {
+		return // the re-executed child runs the body as a non-root uid
+	}
 	root := t.TempDir()
 	lockedDir := filepath.Join(root, "locked")
 	if err := os.Mkdir(lockedDir, 0o755); err != nil {
@@ -3567,9 +3568,7 @@ func TestScanPathPermissionError(t *testing.T) {
 	}
 
 	// Remove permissions.
-	if err := os.Chmod(lockedDir, 0o000); err != nil {
-		t.Fatalf("chmod 000: %v", err)
-	}
+	lockDirFromReader(t, lockedDir)
 	defer func() {
 		// Restore permissions for cleanup.
 		_ = os.Chmod(lockedDir, 0o755)
@@ -3844,7 +3843,9 @@ func TestCacheKeepsCoverageContract(t *testing.T) {
 // and must make the total a lower bound. Dropping it would hide the gap: the row
 // is the only place where "this subtree was not measured" is visible.
 func TestLiveScanKeepsUnavailableDirectoryAndPartialTotal(t *testing.T) {
-	skipIfRoot(t)
+	if runTestWithoutPrivileges(t) {
+		return // the re-executed child runs the body as a non-root uid
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	root := filepath.Join(home, "root")
@@ -3852,10 +3853,7 @@ func TestLiveScanKeepsUnavailableDirectoryAndPartialTotal(t *testing.T) {
 	readable := filepath.Join(root, "readable")
 	writeFileWithSize(t, readable, 4096)
 	writeFileWithSize(t, filepath.Join(locked, "hidden"), 1<<20)
-	if err := os.Chmod(locked, 0); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	lockDirFromReader(t, locked)
 	// The expected total is what this filesystem reports for the readable file,
 	// not a hard-coded byte count: sizes here go through st_blocks, and container
 	// filesystems under-report it (see skipIfBlockAccountingUnreliable). The point

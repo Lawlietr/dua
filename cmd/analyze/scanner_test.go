@@ -375,7 +375,9 @@ func BenchmarkGetDirectorySizeFromDuWithExcludeHomeLibrary(b *testing.B) {
 // A readable root must not turn an unreadable descendant into a measured zero,
 // and a partial scan must not overwrite the good cache entry with a lower bound.
 func TestScanUnreadableDescendantPreservesCoverageAndGoodCache(t *testing.T) {
-	skipIfRoot(t)
+	if runTestWithoutPrivileges(t) {
+		return // the re-executed child runs the body as a non-root uid
+	}
 	// The fixture compares measured bytes across two scans of the same tree, so
 	// it needs a filesystem that reports real allocation for its files.
 	skipIfBlockAccountingUnreliable(t)
@@ -407,10 +409,7 @@ func TestScanUnreadableDescendantPreservesCoverageAndGoodCache(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := os.Chmod(locked, 0); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	lockDirFromReader(t, locked)
 
 	partial := scan()
 	// The exact bytes lost depend on the filesystem's block accounting, so the
@@ -456,7 +455,9 @@ func TestScanUnreadableDescendantPreservesCoverageAndGoodCache(t *testing.T) {
 // measure and says they are a lower bound, and the tree it belongs to is not
 // reported as complete.
 func TestScanFoldedDirWithUnreadableDescendantKeepsCoverage(t *testing.T) {
-	skipIfRoot(t)
+	if runTestWithoutPrivileges(t) {
+		return // the re-executed child runs the body as a non-root uid
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	root := filepath.Join(home, "root")
@@ -464,10 +465,7 @@ func TestScanFoldedDirWithUnreadableDescendantKeepsCoverage(t *testing.T) {
 	locked := filepath.Join(folded, "objects")
 	writeFileWithSize(t, filepath.Join(folded, "HEAD"), 4096)
 	writeFileWithSize(t, filepath.Join(locked, "pack"), 1<<20)
-	if err := os.Chmod(locked, 0); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	lockDirFromReader(t, locked)
 
 	var files, dirs, bytes int64
 	current := &atomic.Value{}
