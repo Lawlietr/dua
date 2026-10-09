@@ -25,7 +25,11 @@ type jsonOutput struct {
 	Entries    []jsonEntry     `json:"entries"`
 	LargeFiles []jsonFileEntry `json:"large_files,omitempty"`
 	TotalSize  int64           `json:"total_size"`
-	TotalFiles int64           `json:"total_files,omitempty"`
+	// TotalFiles has no omitempty on purpose, like total_size above: a scan that
+	// genuinely counted zero files must say 0, not drop the key. Absent and zero
+	// read the same way to a consumer, and "the count is not reported" is not a
+	// thing this document offers - the walk always counts what it walked.
+	TotalFiles int64 `json:"total_files"`
 }
 
 type jsonEntry struct {

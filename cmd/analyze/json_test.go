@@ -111,6 +111,9 @@ func TestJSONOverviewEntriesKeepPartialMeasurement(t *testing.T) {
 type jsonDocumentProbe struct {
 	ScanStatus string `json:"scan_status"`
 	TotalSize  int64  `json:"total_size"`
+	// A pointer, so a test can tell "the key is absent" from "the value is 0".
+	// A plain int64 would read 0 either way and hide an omitempty regression.
+	TotalFiles *int64 `json:"total_files"`
 	Entries    []struct {
 		Path       string `json:"path"`
 		Size       int64  `json:"size"`
@@ -160,6 +163,36 @@ func TestAnalyzeJSONCarriesCoverageOnTheDocumentAndEachEntry(t *testing.T) {
 	}
 	if got, want := document.TotalSize, sumProbeSizes(document); got != want {
 		t.Fatalf("total_size %d does not match the listed entries %d", got, want)
+	}
+}
+
+// The file count is part of the contract, so it has to survive the wire at the
+// value a consumer can least afford to guess about. With omitempty the key
+// disappears exactly when the count is 0, and "this tree is empty" then decodes
+// the same as "no count was reported" - the same false silence this chain
+// removed for sizes, in the field sitting next to total_size.
+func TestAnalyzeJSONAlwaysReportsTheFileCount(t *testing.T) {
+	empty := t.TempDir()
+	document := decodeScanDocument(t, performDirectoryScanForJSON(empty))
+	if document.ScanStatus != "complete" {
+		t.Fatalf("an empty readable directory is a complete scan, got %q", document.ScanStatus)
+	}
+	if document.TotalFiles == nil {
+		t.Fatal("total_files must be present when the count is zero: absent and zero are indistinguishable to a consumer")
+	}
+	if *document.TotalFiles != 0 {
+		t.Fatalf("an empty directory must report a count of 0, got %d", *document.TotalFiles)
+	}
+
+	root := t.TempDir()
+	writeFileWithSize(t, filepath.Join(root, "one"), 4096)
+	writeFileWithSize(t, filepath.Join(root, "two"), 1024)
+	counted := decodeScanDocument(t, performDirectoryScanForJSON(root))
+	if counted.TotalFiles == nil {
+		t.Fatal("total_files must be present on a measured scan")
+	}
+	if got, want := *counted.TotalFiles, int64(2); got != want {
+		t.Fatalf("total_files %d does not match the %d files written", got, want)
 	}
 }
 
