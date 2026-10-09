@@ -8,6 +8,47 @@ import (
 	"time"
 )
 
+// scanState describes measurement coverage within dua's scan filters, not an
+// atomic filesystem snapshot. The zero value represents a complete measurement,
+// so a cache entry or scan result written by an older binary (which never had a
+// state) still reads as complete.
+type scanState uint8
+
+const (
+	scanComplete scanState = iota
+	scanPartial
+	scanUnavailable
+)
+
+func (s scanState) String() string {
+	switch s {
+	case scanPartial:
+		return "partial"
+	case scanUnavailable:
+		return "unavailable"
+	default:
+		return "complete"
+	}
+}
+
+// measurementState preserves the distinction between a useful partial size and
+// a failed probe that measured nothing. Callers must retain the returned bytes:
+// a partial measurement is only partial because some bytes were measured, and
+// reporting it as complete would let the TUI and the cache present an
+// under-counted directory as if the subtree were fully known.
+//
+// Not wired into scan results or the model yet - that happens together with the
+// scanner and cache halves of the upstream chain (see TODO.md cards A-2/A-3).
+func measurementState(size int64, err error) scanState {
+	if err == nil {
+		return scanComplete
+	}
+	if size > 0 {
+		return scanPartial
+	}
+	return scanUnavailable
+}
+
 type dirEntry struct {
 	Name       string
 	Path       string

@@ -69,7 +69,7 @@ Slicing rules for this backlog — each card is a work-session unit:
 |---|---|---|---|---|---|
 | `S0-1` ☑ | Re-fetch upstream, re-derive the chain diff, refresh the hash table in this file | — | 0.5h | this section lists current hashes and hunk counts | always safe |
 | `S0-2` ☐ | Test fixture helper for unreadable dirs that does **not** rely on `chmod 000` + root skip (our CI runs as root, so upstream's fixtures self-skip) | `318ee925` infra | 1h | helper + one self-verifying test runs under root CI | revert helper |
-| `A-1` ☐ | Add `scanState` type (`scanComplete`/`scanPartial`/…), `measurementState()`, unit tests. **Not wired into the model yet.** | `cf6165b2` (type part) | 45m | `go vet` clean, type tests pass, zero behavior change | self-contained |
+| `A-1` ☑ | Add `scanState` type (`scanComplete`/`scanPartial`/…), `measurementState()`, unit tests. **Not wired into the model yet.** | `cf6165b2` (type part) | 45m | ✅ `go vet` clean, 4 tests pass (3 mutations checked), zero behavior change | done in `A-1` commit; A-3 will consume it |
 | `A-2` ☐ | Make `du` report "size + error = partial" instead of dropping the size; thread `context` through the du helpers | `155a0cca`, `d04453f1` | 60–90m | scanner-level tests show partial sizes survive a failing `du` | **highest-risk card — revert freely** |
 | `A-3` ☐ | Carry the state into scan results and the model (`m.scanState`, per-entry state); keep `NeedsRefresh` semantics consistent | `cf6165b2`, `580b8eb0` (model part) | 60m | a partial scan still renders correct totals and marks state | revert after A-2 |
 | `A-4` ☐ | Carry partial coverage through live scan events | `13f068ac` | 45m | live scan does not overwrite partial rows with zeros | independent of B |
@@ -81,6 +81,12 @@ Slicing rules for this backlog — each card is a work-session unit:
 | `C-3` ☐ | Docs: `README.md` + `README.zh-TW.md` in sync, version decision (**minor bump → v0.3.0**, behavior change), release note about the one-time cache invalidation | — | 45m | both READMEs match heading-for-heading | last card of the release |
 | `D-1` ☐ | Real-machine A/B: run the same path before/after, diff the totals and the new markers | — | 30m | a short note in the PR with the observed diff | always safe |
 | `D-2` ☐ | Port the navigation-regression test suite on top of the `S0-2` fixture | `318ee925`, `b77a48d7` | 45m | tests run (not skip) under our root CI | test-only |
+
+Porting notes learned while doing `A-1` (cheap risk reductions for `A-3`/`B-2`):
+
+- Upstream's coverage tests call `scanPathConcurrentAllEntries`, `calculateDirSizeFast`, `saveCacheToDisk`, `loadCacheFromDisk`, `writeFileWithSize` and `skipIfRoot` — **all of these already exist in `cmd/analyze/` with the same names**, so the tests in `cf6165b2`/`20ac485b` port almost verbatim once the `State` fields exist. The blocker is the fixture, not the API surface → that is exactly why `S0-2` gates `D-2`.
+- Upstream's `scanState` uses `scanComplete = iota` deliberately: cache files written before coverage tracking decode `State` as 0, so the zero value must mean complete. `TestScanStateZeroValueMeansComplete` pins this; `B-2` (cache semantics) must not re-order those constants.
+- `scan_state_test.go` exists but nothing calls `measurementState` yet — `go vet` does not flag unused package-level functions, and CI runs vet + tests only. If `A-3` slips, this type stays dead code on the branch; that is the accepted cost of the slicing rule.
 
 Suggested session plan: `S0-1` ☑ + `S0-2` as a warm-up session; then one of `A-1`/`A-3`/`A-4`/`B-1`/`B-3`/`C-2`/`C-3` for a 45–60 minute slot, and reserve `A-2`/`B-2` for a session where you have 2+ hours free. Total for the chain: ~12h (plus buffer), which is why it must not be attempted as one sitting. `B-2` was re-sized upward from 60–90m after the 2026-10-09 cost probe: `50c89d9b` alone conflicts in 9 files with 43 markers.
 
@@ -184,7 +190,8 @@ One row per closed card. The `actual` column is the input for re-sizing future c
 
 | Date | Card | Est. | Actual | Commit | Outcome / notes |
 |---|---|---|---|---|---|
-| 2026-10-09 | `S0-1` | 0.5h | ~35m | (this commit) | Re-fetched: `upstream/main` unchanged (`2e8ea7f3`), 0 open PRs, newest analyze/status commit `1aad186b` already triaged → no new work. All 13 chain hashes + every other backlog hash verified as live ancestors. Corrected the commit count 151 → **140** (135 non-merge + 5 merges) and replaced the bogus "62 hunks" figure with a cherry-pick probe: 40 conflicted files / 82 markers, `50c89d9b` worst at 9/43. Re-sized `B-2` to 90–120m. Lesson: measure with `git cherry-pick -x` in a scratch worktree, never with `git apply --check -3` output. |
+| 2026-10-09 | `A-1` | 45m | ~30m | (this commit) | `scanState` + `measurementState()` added to `cmd/analyze/model.go` at the upstream position (keeps later cherry-picks aligned), tests in new `cmd/analyze/scan_state_test.go`. Not wired into `dirEntry`/`scanResult` — that is `A-3`. 3 mutations verified to fail the tests (`size >= 0`, partial→unavailable, reordering the iota so zero ≠ complete). `make check` green. |
+| 2026-10-09 | `S0-1` | 0.5h | ~35m | `43872222` | Re-fetched: `upstream/main` unchanged (`2e8ea7f3`), 0 open PRs, newest analyze/status commit `1aad186b` already triaged → no new work. All 13 chain hashes + every other backlog hash verified as live ancestors. Corrected the commit count 151 → **140** (135 non-merge + 5 merges) and replaced the bogus "62 hunks" figure with a cherry-pick probe: 40 conflicted files / 82 markers, `50c89d9b` worst at 9/43. Re-sized `B-2` to 90–120m. Lesson: measure with `git cherry-pick -x` in a scratch worktree, never with `git apply --check -3` output. |
 | 2026-10-09 | P3 batch (pre-card era) | — | ~2h | `9952bdde`, `e2994ff1` | 3 upstream commits + 4 tests; mutation-checked the tick guard. `make check` green, pty smoke OK. Not yet merged to `main`. |
 | 2026-10-09 | docs re-audit | — | ~1h | `67583cad`, `3d011733` | Corrected the A-layer upstream mapping, re-derived counts for `V1.58.0`, split the backlog into cards. |
 
