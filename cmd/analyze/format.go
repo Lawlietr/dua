@@ -309,6 +309,18 @@ func measuredSizeLabel(size int64, state scanState) string {
 	return label
 }
 
+// sizeColumn fills the 10-column size field with the partial marker in its own
+// last column, so the units line up whether or not a row is partial: "37.1 GB+"
+// and "2.1 GB" then share the same last digit column instead of sitting one
+// column apart. The 10-column contract is what the spinner placeholder
+// ("⠋ scanning") already satisfies, and callers format the result with %10s.
+func sizeColumn(label string) string {
+	if trimmed, partial := strings.CutSuffix(label, "+"); partial {
+		return fmt.Sprintf("%9s+", trimmed)
+	}
+	return fmt.Sprintf("%9s ", label)
+}
+
 // scanSummary is the status line for a finished scan: a partial total must not
 // claim the whole tree was read.
 func scanSummary(size int64, state scanState) string {

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -4566,5 +4568,65 @@ func TestPartialNavigationRefreshRecoversCoverage(t *testing.T) {
 	if m.scanState != scanComplete || m.scanning || m.totalSize <= blockedTotal || m.cache[root].NeedsRefresh || strings.Contains(m.View(), "unknown") {
 		t.Fatalf("refresh did not recover authoritative coverage: state=%s total=%d blockedTotal=%d scanning=%v\n%s",
 			m.scanState, m.totalSize, blockedTotal, m.scanning, m.View())
+	}
+}
+
+func TestSizeColumnKeepsUnitsAlignedForPartialRows(t *testing.T) {
+	complete := sizeColumn(measuredSizeLabel(2*1024*1024*1024, scanComplete))
+	partial := sizeColumn(measuredSizeLabel(37*1024*1024*1024, scanPartial))
+	unknown := sizeColumn(measuredSizeLabel(0, scanUnavailable))
+	for _, col := range []string{complete, partial, unknown} {
+		if len(col) != 10 {
+			t.Fatalf("size column %q is %d columns, want 10", col, len(col))
+		}
+	}
+	if strings.Index(complete, "GB") != strings.Index(partial, "GB") {
+		t.Fatalf("units drift between %q and %q", complete, partial)
+	}
+	if partial[9] != '+' || complete[9] != ' ' || unknown[9] != ' ' {
+		t.Fatalf("partial marker not in its own last column: %q %q %q", complete, partial, unknown)
+	}
+}
+
+// ansiCSI strips the color escapes View() emits, so a test can measure display
+// columns of a painted row instead of its escape bytes.
+var ansiCSI = regexp.MustCompile("\033\\[[0-9;]*m")
+
+// The rendered overview must put the units of a partial row and a complete row
+// in the same display column, with the "+" hanging in its own last column. This
+// measures the painted rows, not the helper, so a change to the row format
+// strings is caught here.
+func TestOverviewPartialMarkerSitsRightOfAlignedUnits(t *testing.T) {
+	const gb = int64(1024 * 1024 * 1024)
+	m := model{
+		isOverview: true,
+		path:       "/",
+		selected:   -1,
+		width:      100,
+		entries: []dirEntry{
+			{Name: "var", Path: "/var", Size: 37 * gb, IsDir: true, State: scanPartial},
+			{Name: "home", Path: "/home", Size: 2 * gb, IsDir: true, State: scanComplete},
+		},
+		totalSize: 39 * gb,
+		scanState: scanPartial,
+	}
+
+	view := ansiCSI.ReplaceAllString(m.View(), "")
+	unitColumn := map[string]int{}
+	for _, line := range strings.Split(view, "\n") {
+		for _, name := range []string{"var", "home"} {
+			i := strings.LastIndex(line, "GB")
+			if i >= 0 && strings.Contains(line, name) {
+				// Display columns, not bytes: every progress bar block is one
+				// multibyte rune, so byte offsets would drift with the bar fill.
+				unitColumn[name] = utf8.RuneCountInString(line[:i])
+			}
+		}
+	}
+	if len(unitColumn) != 2 {
+		t.Fatalf("expected one partial and one complete row carrying a size, got %v in:\n%s", unitColumn, view)
+	}
+	if unitColumn["var"] != unitColumn["home"] {
+		t.Fatalf("partial and complete rows should share the unit column, got %v in:\n%s", unitColumn, view)
 	}
 }
