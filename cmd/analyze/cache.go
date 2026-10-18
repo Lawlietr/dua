@@ -651,14 +651,15 @@ func loadCacheFromDisk(path string) (*cacheEntry, error) {
 	}
 
 	if info.ModTime().After(entry.ModTime) {
-		// Allow grace window.
-		if cacheModTimeGrace <= 0 || info.ModTime().Sub(entry.ModTime) > cacheModTimeGrace {
-			// Directory mod time is noisy on macOS; reuse recent cache to avoid
-			// frequent full rescans while still forcing refresh for older entries.
-			if cacheReuseWindow <= 0 || scanAge > cacheReuseWindow {
-				return nil, fmt.Errorf("cache expired: directory modified")
-			}
-		}
+		// The directory gained, lost or renamed one of its own entries, so both
+		// the stored total and the stored listing are out of date. There is no
+		// grace window: refusing costs one level, not a full rescan, because the
+		// TUI paints the previous listing first (loadStaleCacheFromDisk) and
+		// refreshes behind it, while the subtrees below come from their own
+		// caches. A window existed because macOS also moves a directory's mtime
+		// when a child's contents or metadata change; on Linux the mtime moves
+		// only when the entry set changes, so a bump is always a real change.
+		return nil, fmt.Errorf("cache expired: directory modified")
 	}
 
 	return entry, nil

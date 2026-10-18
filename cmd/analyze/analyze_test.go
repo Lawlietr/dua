@@ -3437,7 +3437,7 @@ func TestLoadCacheExpiresWhenDirectoryChanges(t *testing.T) {
 	if _, err := os.Stat(cachePath); err != nil {
 		t.Fatalf("stat cache: %v", err)
 	}
-	oldTime := time.Now().Add(-cacheModTimeGrace - time.Minute)
+	oldTime := time.Now().Add(-time.Hour)
 	if err := os.Chtimes(cachePath, oldTime, oldTime); err != nil {
 		t.Fatalf("chtimes cache: %v", err)
 	}
@@ -3472,7 +3472,26 @@ func TestLoadCacheExpiresWhenDirectoryChanges(t *testing.T) {
 	}
 }
 
-func TestLoadCacheReusesRecentEntryAfterDirectoryChanges(t *testing.T) {
+// setChangedAfterRecentScan runs save while dir's mtime is a minute old, then
+// moves the mtime to now: a file added or removed right after the scan, as when
+// a user downloads something and reopens analyze.
+func setChangedAfterRecentScan(t *testing.T, dir string, save func()) {
+	t.Helper()
+	old := time.Now().Add(-time.Minute)
+	if err := os.Chtimes(dir, old, old); err != nil {
+		t.Fatalf("chtimes %s: %v", dir, err)
+	}
+	save()
+	if err := os.Chtimes(dir, time.Now(), time.Now()); err != nil {
+		t.Fatalf("chtimes %s: %v", dir, err)
+	}
+}
+
+// A directory whose own entries changed right after a scan must not be served as
+// current: the TUI would show the old listing with no refresh, and a parent scan
+// would fold the old subtree total into its own. dua kept doing it for up to 24
+// hours - a 30-minute grace window nested inside a 24-hour reuse window.
+func TestLoadCacheRefusesRecentEntryAfterDirectoryChanges(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -3480,6 +3499,50 @@ func TestLoadCacheReusesRecentEntryAfterDirectoryChanges(t *testing.T) {
 	if err := os.MkdirAll(target, 0o755); err != nil {
 		t.Fatalf("create target: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(target, "old.bin"), make([]byte, 5), 0o644); err != nil {
+		t.Fatalf("seed the old file: %v", err)
+	}
+
+	// The scan is recorded while the directory's mtime is a minute old, then a
+	// file lands: the download-then-reopen case the grace window used to hide.
+	setChangedAfterRecentScan(t, target, func() {
+		if err := saveCacheToDisk(target, scanResult{TotalSize: 5, TotalFiles: 1}); err != nil {
+			t.Fatalf("saveCacheToDisk: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(target, "download.bin"), make([]byte, 4096), 0o644); err != nil {
+			t.Fatalf("add a file after the scan: %v", err)
+		}
+	})
+
+	if _, err := loadCacheFromDisk(target); err == nil {
+		t.Fatal("strict cache read served a directory whose entry set changed after the scan")
+	}
+
+	// The strict refusal is cheap because the first paint still shows the
+	// previous listing while the refresh runs behind it.
+	stale, err := loadStaleCacheFromDisk(target)
+	if err != nil {
+		t.Fatalf("stale first paint failed: %v", err)
+	}
+	if stale.TotalSize != 5 || stale.TotalFiles != 1 {
+		t.Fatalf("stale first paint lost the previous listing: %+v", stale)
+	}
+}
+
+// Dropping the reuse window must not turn the cache into a rescan-everything
+// switch: an entry scanned well past the old 24-hour window is still served
+// while the directory itself has not moved.
+func TestLoadCacheStillServesUnmodifiedDirectoryBeyondTheOldReuseWindow(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	target := filepath.Join(home, "unchanged-target")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "file.bin"), make([]byte, 5), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
 
 	result := scanResult{TotalSize: 5, TotalFiles: 1}
 	if err := saveCacheToDisk(target, result); err != nil {
@@ -3490,7 +3553,6 @@ func TestLoadCacheReusesRecentEntryAfterDirectoryChanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getCachePath: %v", err)
 	}
-
 	file, err := os.Open(cachePath)
 	if err != nil {
 		t.Fatalf("open cache: %v", err)
@@ -3501,10 +3563,10 @@ func TestLoadCacheReusesRecentEntryAfterDirectoryChanges(t *testing.T) {
 	}
 	_ = file.Close()
 
-	// Make cache entry look recently scanned, but older than mod time grace.
-	entry.ModTime = time.Now().Add(-2 * time.Hour)
-	entry.ScanTime = time.Now().Add(-1 * time.Hour)
-
+	// Scanned 25 hours ago - past the window dua used to demand - and the
+	// directory has not been touched since.
+	entry.ScanTime = time.Now().Add(-25 * time.Hour)
+	entry.ModTime = time.Now().Add(-25 * time.Hour)
 	tmp := cachePath + ".tmp"
 	f, err := os.Create(tmp)
 	if err != nil {
@@ -3517,68 +3579,12 @@ func TestLoadCacheReusesRecentEntryAfterDirectoryChanges(t *testing.T) {
 	if err := os.Rename(tmp, cachePath); err != nil {
 		t.Fatalf("rename tmp cache: %v", err)
 	}
-
-	if err := os.Chtimes(target, time.Now(), time.Now()); err != nil {
+	if err := os.Chtimes(target, entry.ModTime, entry.ModTime); err != nil {
 		t.Fatalf("chtimes target: %v", err)
 	}
 
 	if _, err := loadCacheFromDisk(target); err != nil {
-		t.Fatalf("expected recent cache to be reused, got error: %v", err)
-	}
-}
-
-func TestLoadCacheExpiresWhenModifiedAndReuseWindowPassed(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	target := filepath.Join(home, "reuse-window-target")
-	if err := os.MkdirAll(target, 0o755); err != nil {
-		t.Fatalf("create target: %v", err)
-	}
-
-	result := scanResult{TotalSize: 5, TotalFiles: 1}
-	if err := saveCacheToDisk(target, result); err != nil {
-		t.Fatalf("saveCacheToDisk: %v", err)
-	}
-
-	cachePath, err := getCachePath(target)
-	if err != nil {
-		t.Fatalf("getCachePath: %v", err)
-	}
-
-	file, err := os.Open(cachePath)
-	if err != nil {
-		t.Fatalf("open cache: %v", err)
-	}
-	var entry cacheEntry
-	if err := gob.NewDecoder(file).Decode(&entry); err != nil {
-		t.Fatalf("decode cache: %v", err)
-	}
-	_ = file.Close()
-
-	// Within overall 7-day TTL but beyond reuse window.
-	entry.ModTime = time.Now().Add(-48 * time.Hour)
-	entry.ScanTime = time.Now().Add(-(cacheReuseWindow + time.Hour))
-
-	tmp := cachePath + ".tmp"
-	f, err := os.Create(tmp)
-	if err != nil {
-		t.Fatalf("create tmp cache: %v", err)
-	}
-	if err := gob.NewEncoder(f).Encode(&entry); err != nil {
-		t.Fatalf("encode tmp cache: %v", err)
-	}
-	_ = f.Close()
-	if err := os.Rename(tmp, cachePath); err != nil {
-		t.Fatalf("rename tmp cache: %v", err)
-	}
-
-	if err := os.Chtimes(target, time.Now(), time.Now()); err != nil {
-		t.Fatalf("chtimes target: %v", err)
-	}
-
-	if _, err := loadCacheFromDisk(target); err == nil {
-		t.Fatalf("expected cache load to fail after reuse window passes")
+		t.Fatalf("an untouched directory must still reuse its cache, got: %v", err)
 	}
 }
 
