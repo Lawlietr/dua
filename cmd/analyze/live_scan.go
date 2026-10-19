@@ -393,9 +393,6 @@ func runLiveScan(
 	}
 	mu.Unlock()
 	sortDirEntriesBySize(finalEntries)
-	if len(finalEntries) > maxEntries {
-		finalEntries = finalEntries[:maxEntries]
-	}
 
 	state := scanComplete
 	if incomplete.Load() {

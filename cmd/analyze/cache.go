@@ -28,7 +28,11 @@ import (
 // totals written without coverage information are rejected.
 // v5: entries and overview snapshots record their coverage, so a partial result
 // lost only to permission denials can be cached and still reads as partial.
-const cacheSchemaVersion = 5
+// v6: a stored listing is bounded to maxEntries and now says so via
+// NeedsRefresh. Before this, a stored listing was truncated to the same 30 rows
+// by the live scan but recorded as complete, so browsing one silently hid the
+// directory's other children.
+const cacheSchemaVersion = 6
 
 type overviewSizeSnapshot struct {
 	Size int64 `json:"size"`
@@ -713,9 +717,17 @@ func saveCacheToDiskWithOptions(publication *scanPublication, path string, resul
 		return err
 	}
 
+	// Recursive measurements and disk snapshots stay bounded. A shortened
+	// listing is useful for first paint and subtree totals, but browsing it
+	// requires a live scan to enumerate every direct child.
+	entries := result.Entries
+	if len(entries) > maxEntries {
+		entries = entries[:maxEntries]
+		needsRefresh = true
+	}
 	entry := cacheEntry{
 		State:         result.State,
-		Entries:       result.Entries,
+		Entries:       entries,
 		LargeFiles:    result.LargeFiles,
 		TotalSize:     result.TotalSize,
 		TotalFiles:    result.TotalFiles,

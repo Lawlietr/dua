@@ -377,6 +377,143 @@ These are independent of the P0 chain except for the `cache.go` hotspot; take th
 | `F-2` ☐ | found while upgrading this machine to v0.3.0 with `dua update` | `dua update` **reports the wrong current version** when run from inside any git working tree: in the dua repo it printed `current version : v0.3.0` / “already up to date” while the installed binaries were v0.2.0 (`dua version` → `v0.2.0`, commit `0b6975dc`). Cause: `current_tag()` takes `git describe --tags --abbrev=0` whenever `git rev-parse --git-dir` succeeds for the **CWD**, so the installed binaries’ embedded version is only a fallback. Clean A/B, one variable: from `/tmp` the same router reported `v0.2.0` and updated correctly. Any repo carrying a `v*` tag can produce a false “already up to date” or a false “local version is newer than latest release; skipping update”. Fix direction: trust the installed binaries by default; consult git only when `$SCRIPT_DIR` is itself a checkout of this project. | 10m | router-only; no shell test harness exists, so verify by A/B (repo CWD vs `/tmp`) and `bash -n` |
 | `F-3` ☐ | same run | After a successful update the old router printed `/root/.local/bin/dua: line 241: .: filename argument required` — and line 241 does not exist in that file (240 lines, ends with `esac`). Cause: `do_update` installs with `cp`, which truncates and rewrites the **same inode** the running bash is still reading, so the interpreter resumes at a stale byte offset inside the new, longer text. Reproduced minimally (`/tmp/selfov/a.sh`, 77 bytes, `cp`s a 477-byte file over `$0` then continues): instead of running its own next line it ran the **replacement file’s** text, and the same script with `cp … && mv … "$0"` behaved correctly. In the real run the resumed bytes happened to parse as a bare `.`, hence “filename argument required”. Exit code was 0 and the update did land, so this is cosmetic but it makes every successful update look like a failure. Fix direction: what the repro verified — unlink-then-move (`mv` out of staging, or `rm -f` before copying) so the running script keeps its old inode. | 10m | worth doing before `F-2` — it is the one users see, and the fix is one line |
 
+## Batch B — analyze listing correctness (2026-10-28, done)
+
+Branch `port/analyze-listing`, off `main` = `d2dee131`, rebased onto Batch A
+(`port/status-network` = `ab637eaf`) before merging, so the two batches land as a linear
+history. Chosen from the 2026-10-28
+re-audit (`upstream/main` = `45ee88cb`, 22 commits touching `cmd/analyze`/
+`cmd/status` since `d917cb17`): the three that change what a user can see in the
+analyze listing. Card ids here are `L-*` to avoid colliding with the `A-*`/`B-*`/
+`C-*` ids of the P0 chain.
+
+| Card | Upstream | What | Est. | Actual |
+|---|---|---|---|---|
+| `L-1` ☑ | `890ceafe` | keep size units aligned on partial rows | 30m | **4m50s** |
+| `L-2` ☑ | `e6b94dc8` | refresh a directory changed soon after its scan | 45m | **7m46s** |
+| `L-3` ☑ | `6307d735` | keep every child of a browsed directory | 90m | **~35m** |
+
+Wall times come from the reflog (branch created 17:56:56; `L-1` committed
+18:01:46; `L-2` 18:09:32), not from memory. Aggregate: **165m planned, 48m actual
+(0.29×)** — the opposite direction from the P0 calibration (+8%). Every card here was
+a small upstream diff whose decision had already been written into the card text
+before starting, which is the rule the P0 log derived ("name the decision in the card
+text, or size the card as a probe"). The 90m on `L-3` was still over-sized by 2.6×,
+and the reason is worth recording: the card was priced as if unbounded listings would
+need a memory guard, and the measurement below showed no guard is needed.
+
+### Work log
+
+`L-1` (dua `0135dee3`, upstream `890ceafe`) — the defect was reproduced in dua's own
+tree first: a lower-bound row printed `739.6 MB+` while its neighbour printed
+`1.2 GB`, and the `+` sits *outside* the padded width, so the unit column shifted.
+Two changes: pad on the rendered text including the marker, and give `--` the same
+right-aligned width as a size instead of a left-aligned bare token. 5 mutation
+probes, all red except one recorded in the commit as not pinned.
+
+`L-2` (dua `347b23cf`, upstream `e6b94dc8` — dua carried **two** reuse gates where
+upstream had one: upstream's 30-minute grace window, and a dua-only 24-hour
+`cacheReuseWindow` inside it ("directory mod time is noisy on macOS"). On Linux a
+directory's mtime moves only when its entry set changes, so both went. Measured A/B
+with the two binaries on one tree: after a 150-file child directory had been cached by
+a parent scan, dropping another file inside it and re-scanning the parent gave
+`total_files 150 → 150` with no byte movement on `main`, and `150 → 151` on this card.
+Cost measured, not assumed: median of 5 warm one-shot runs, `/usr` 58ms → 50ms,
+`/var` 62ms → 65ms, `/etc` 60ms → 60ms (an earlier best-of-3 sample showed +6/+11ms
+and was noise — re-measure before quoting a cost). Test re-derivation: dua had a pair
+pinning the old policy from both sides, both replaced. 4 mutation probes, 3 red, one
+recorded as unpinned (sub-second mtime slop).
+
+`L-3` (upstream `6307d735`; the dua commit is the last one of the batch — its own
+hash cannot be written inside itself, so it is recorded in the merge note below, and
+its message carries `Upstream: 6307d735`) — the live scan
+cut the finished listing to `maxEntries` (30) rows, so in a directory with more
+children the rest were
+**not enterable** while their bytes were already paid for in memory. Four parts
+ported: the live listing keeps every child; the on-disk listing and recursive
+summaries stay bounded to 30 rows and now set `NeedsRefresh` (cache schema **5 → 6**,
+so every user's analyze cache is re-measured once — same one-time cost as the v3→v5
+bump in v0.3.0); the row-number column widens (`%2d` → `%*d`) so 3-digit indexes do
+not shift or widen the row; and `finishLiveScan` hands the cache writer the cloned
+history snapshot instead of the view's arrays.
+
+Three deviations, each forced by dua's tree rather than chosen for style:
+
+1. **Upstream's test file is `//go:build darwin`** — and that gate is not incidental.
+   `TestDirectoryRefreshKeepsSelectedPathVisible` hardcodes `entry-79` as the row under
+   the cursor after 79 Down presses, which only holds if `readdir` returns creation
+   order (macOS); on Linux the order is hash-based, so the hardcoded name is a
+   different row. Reproduced: upstream's body verbatim fails on this machine. The port
+   reads the selected path back from the model (`m.selectedEntryPath()`) and grows
+   **that** child, so the invariant — the cursor follows its path across a re-sort — is
+   pinned on Linux too. dua's CI runs tests on Linux only, so the gate is dropped; an
+   OS gate here would mean the file never runs anywhere in this repo.
+2. **The deletion half is not portable.** Upstream's
+   `TestCompletedListingCacheDuringDeletion`, `TestRemovePathPreservesBackingLists` and
+   the delete-confirmation steps inside the navigation test reference
+   `deleteProgressMsg` / `m.deleteTarget` / `m.removePathFromView`, none of which exist
+   in dua (the delete surface was removed at the fork). They are dropped, and the
+   navigation test asserts the same reachability through the filter instead.
+3. **`m.cancelBackgroundCacheWrites` has no dua counterpart** (dua's `finishLiveScan`
+   spawns a plain goroutine), so the ported cases wait for the listing to reach the
+   disk cache before returning: the temp `HOME` is unlinked at cleanup, which would
+   otherwise race the writer.
+
+Measured cost of unbounded listings (TUI under a pty, `VmHWM` sampled 14× over 7s,
+`pgrep -x` so the sampler never matches its own shell): 10,000 children **17.9 MB →
+15.7 MB**, 50,000 children **40.5 MB → 37.5 MB**. Peak does not go *up* because the
+truncation happened after the scan had already allocated every row — the old behaviour
+paid the memory and then threw the rows away, which is the strongest argument for the
+card. Benchmark over 10,000 entries (same bench file on both trees, `-benchtime=30x`):
+`render` 201µs → 260µs per frame (+29%, 0.26ms against a 250ms tick), `filter_last`
+3.68ms → 3.34ms.
+
+A/B proof that behaviour changed, run against the pre-fix tree rather than asserted:
+the three ported tests were copied into a `main` worktree (`ab_probe_test.go`) and all
+failed there — `want all 40 children after clearing filter, got 30`, `existing child
+disappeared when scan finished: []`, `row numbers shifted the columns at 99` — and all
+pass on the branch (`-count=3` clean there).
+
+Mutation probes for `L-3`: 4 run, 4 red. Re-truncating the live listing (6 failures,
+including the re-executed unprivileged card), storing the whole listing in the cache
+(4), `selectEntryPath` returning instead of breaking (2, so the missing
+`clampEntrySelection` is reachable), clamping `indexWidth` to 2 (1). A first attempt at
+that fourth probe did not compile (unused `strconv`) and was rerun as a mutation that
+does — a build failure is not a red test. One hunk is **not** pinned by anything:
+dropping `result.Entries = cached.Entries` from `finishLiveScan` stays green, because
+the arrays it shares with the writer are only read concurrently and nothing in this
+repo runs `go test -race`. Recorded rather than hidden; if a `-race` lane is ever added
+to `test.yml`, that hunk is what it would catch.
+
+Docs: both READMEs said "The interactive list keeps the 30 largest entries", which this
+card makes false. Replaced in `README.md` and `README.zh-TW.md` (zh-TW drafted through
+Index-Translate, then corrected: the model returned 磁盤/遞歸, which are simplified
+forms — this repo uses 磁碟/遞迴). Verified with the two scripted checks AGENTS.md asks
+for: 12 sections, 0 shape mismatches, 23/23 bullets, 10/10 fences, 25/25 paragraphs, no
+simplified-form candidates, and the coverage bullet's token sequence identical on both
+sides (`scan_status`, `+`, `739.6 MB+`, `--`, `--`, `partial`, `30`, `--json`, `R`).
+
+### State of the branches after Batch B
+
+**Merge record (2026-10-28).** Batch A landed first: `main` fast-forwarded from
+`d2dee131` to `ab637eaf`. Batch B was then rebased onto that (`git rebase --onto
+port/status-network d2dee131 port/analyze-listing`), which rewrote the three card
+commits — pre-rebase `5c637ff8`/`e095afec`/`621cc33e` became `0135dee3`/`347b23cf`/
+`L-3` — and `main` was fast-forwarded again. Only AGENTS.md conflicted (the decision
+log, where both batches insert rows, and the Next Steps list); TODO.md merged cleanly
+and needed only factual follow-through: the branch-status paragraph above, the two
+post-rebase hashes, and the `P3'` Next-Steps line, which this batch closes. The code
+trees never overlapped (`cmd/status/*` vs `cmd/analyze/*`), so no code hunk was
+re-resolved. After the merge: `go vet ./...` clean, `go test ./... -count=1` green,
+and the `/etc` one-shot measurement identical between the pre-merge `main` build and
+the merged build (`194 rows / 1,387,786 / 796 files / scan_status complete`).
+
+The AGENTS.md upstream-count sentence was re-derived on 2026-10-28 against
+`upstream/main` = `45ee88cb`: `b56f7561..upstream/main -- cmd/analyze/ cmd/status/`
+holds **162** commits (157 non-merge + 5 merge), and `d917cb17..upstream/main` over the
+same paths holds **22**. Open upstream PRs: **0** (`gh pr list --repo tw93/Mole --state
+open`).
+
 ## SKIP — Mole-specific / macOS / cleanup (not dua scope)
 
 dua is read-only and Linux-first. Do NOT port these:

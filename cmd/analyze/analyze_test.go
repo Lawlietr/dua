@@ -4443,10 +4443,12 @@ func TestLiveScanKeepsRowWhenTargetCannotBeScanned(t *testing.T) {
 	t.Fatal("live scan dropped a directory it could not scan")
 }
 
-// The terminal listing keeps at most maxEntries rows, so an unmeasurable row can
-// fall outside it. Coverage must not depend on that cap: the total stays a
-// labelled lower bound, the JSON keeps every scanned row, and an unknown row
-// never displaces a measured one. Ported from upstream b77a48d7.
+// The recursive summary keeps at most maxEntries rows, so an unmeasurable row
+// can fall outside it, while the browsed listing carries every child the scan
+// saw. Coverage must not depend on that cap: the total stays a labelled lower
+// bound, the JSON keeps every scanned row, and an unknown row never displaces a
+// measured one. Ported from upstream b77a48d7; the listing expectation follows
+// upstream 6307d735, which stopped cutting the browsed listing.
 func TestPartialScanCoverageSurvivesEntryLimit(t *testing.T) {
 	if runTestWithoutPrivileges(t) {
 		return // the re-executed child runs the body as a non-root uid
@@ -4482,10 +4484,18 @@ func TestPartialScanCoverageSurvivesEntryLimit(t *testing.T) {
 	if msg.result.State != scanPartial || msg.result.TotalSize != want {
 		t.Fatalf("limited view lost aggregate coverage: state=%s total=%d want=%d", msg.result.State, msg.result.TotalSize, want)
 	}
-	if len(msg.result.Entries) != maxEntries {
-		t.Fatalf("listing must keep the %d largest rows, got %d", maxEntries, len(msg.result.Entries))
+	// Every child the live scan saw is a row the user can enter, including the
+	// directory that could not be measured.
+	if len(msg.result.Entries) != maxEntries+1 {
+		t.Fatalf("live listing must carry every child (%d readable + 1 locked), got %d", maxEntries, len(msg.result.Entries))
 	}
-	for _, entry := range msg.result.Entries {
+	// Recursive summaries still retain only the largest rows, while carrying
+	// aggregate coverage for the unavailable entries they leave out.
+	summary, err := scanPathConcurrent(context.Background(), root, m.filesScanned, m.dirsScanned, m.bytesScanned, m.currentPath)
+	if err != nil || summary.State != scanPartial || summary.TotalSize != msg.result.TotalSize || len(summary.Entries) != maxEntries {
+		t.Fatalf("bounded summary lost aggregate coverage: %+v, %v", summary, err)
+	}
+	for _, entry := range summary.Entries {
 		if entry.Path == locked {
 			t.Fatal("unknown entry displaced a larger measured entry")
 		}
