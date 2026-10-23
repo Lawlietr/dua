@@ -120,6 +120,16 @@ func (c *Collector) collectNetwork(now time.Time) []NetworkStatus {
 		return result[i].RxRateMBs+result[i].TxRateMBs > result[j].RxRateMBs+result[j].TxRateMBs
 	})
 	if len(result) > 3 {
+		// Idle interfaces tie at zero and /sys/class/net lists bridge devices
+		// (docker0, br-*, veth*) before the NICs, so a routed NIC carrying no
+		// traffic yet could fall off the cap. A routed tunnel is already first
+		// from the sort above, so this only rescues a routed physical device.
+		for i := 3; i < len(result); i++ {
+			if result[i].Name == defaultInterface {
+				result[2] = result[i]
+				break
+			}
+		}
 		result = result[:3]
 	}
 

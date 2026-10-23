@@ -324,3 +324,45 @@ func TestTunnelHintDoesNotExpandProxyJSONContract(t *testing.T) {
 		t.Fatalf("proxy JSON contract changed: got %s, want %s", encoded, want)
 	}
 }
+
+// A routed NIC that has not carried traffic yet must survive the three-row cap,
+// because idle rows tie at zero and /sys/class/net lists bridge devices first.
+func TestCollectNetworkKeepsIdleDefaultInterface(t *testing.T) {
+	original := ioCountersFunc
+	t.Cleanup(func() { ioCountersFunc = original })
+	const mb = 1024 * 1024
+	// Kernel order on a container host: docker0 and the user-defined bridges
+	// come before the physical NICs.
+	names := []string{"docker0", "br-3f2a1c9d0b7e", "veth4b21f9", "eth0", "eth1"}
+	counters := make([]gopsutilnet.IOCountersStat, len(names))
+	for i, name := range names {
+		counters[i] = gopsutilnet.IOCountersStat{Name: name, BytesRecv: 100 * mb, BytesSent: 100 * mb}
+	}
+	ioCountersFunc = func(bool) ([]gopsutilnet.IOCountersStat, error) {
+		return append([]gopsutilnet.IOCountersStat(nil), counters...), nil
+	}
+	names3 := func(got []NetworkStatus) string {
+		var out []string
+		for _, n := range got {
+			out = append(out, n.Name)
+		}
+		return strings.Join(out, ",")
+	}
+	now := time.Now()
+	c := &Collector{prevNet: make(map[string]gopsutilnet.IOCountersStat), defaultNetInterface: "eth1", cachedNetIPs: map[string]string{}, lastNetIPAt: now}
+	c.primeNetworkCounters(now)
+
+	// Every interface idle: tie order is unspecified, but the routed one stays.
+	now = now.Add(time.Second)
+	if got := c.collectNetwork(now); len(got) != 3 || !strings.Contains(","+names3(got)+",", ",eth1,") {
+		t.Fatalf("idle routed interface dropped: %s", names3(got))
+	}
+	// Three busier devices keep their order; the routed one still shows.
+	for i := range 3 {
+		counters[i].BytesRecv += uint64(3-i) * mb
+	}
+	now = now.Add(time.Second)
+	if got := names3(c.collectNetwork(now)); got != "docker0,br-3f2a1c9d0b7e,eth1" {
+		t.Fatalf("busy devices pushed out the routed one: %s", got)
+	}
+}
