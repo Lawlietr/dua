@@ -546,9 +546,24 @@ func renderNetworkCard(netStats []NetworkStatus, history NetworkHistory, proxy P
 	totalRx, totalTx := networkTotals(netStats)
 	var primaryIP string
 
+	// The routed physical interface owns the IP line, so a second NIC or a USB
+	// adapter reports its own address instead of whichever device the kernel
+	// happens to list first. A routed tunnel's address is not the host's LAN
+	// address, so it never wins on its own. When the route is unknown (a netns
+	// with no default route, or the route probe failing), fall back to the
+	// busiest non-tunnel row, which is already first in the sample's order.
 	for _, n := range netStats {
-		if primaryIP == "" && n.IP != "" && n.Name == "en0" {
+		if n.IP != "" && n.defaultRoute && !n.defaultTunnel {
 			primaryIP = n.IP
+			break
+		}
+	}
+	if primaryIP == "" {
+		for _, n := range netStats {
+			if n.IP != "" && !n.defaultTunnel {
+				primaryIP = n.IP
+				break
+			}
 		}
 	}
 

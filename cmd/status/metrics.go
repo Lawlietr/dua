@@ -163,11 +163,15 @@ type DiskStatus struct {
 }
 
 type NetworkStatus struct {
-	Name          string  `json:"name"`
-	RxRateMBs     float64 `json:"rx_rate_mbs"`
-	TxRateMBs     float64 `json:"tx_rate_mbs"`
-	IP            string  `json:"ip"`
-	defaultTunnel bool    // Sample-local routing hint; not part of the JSON contract.
+	Name      string  `json:"name"`
+	RxRateMBs float64 `json:"rx_rate_mbs"`
+	TxRateMBs float64 `json:"tx_rate_mbs"`
+	IP        string  `json:"ip"`
+	// Sample-local routing hints; not part of the JSON contract. defaultTunnel
+	// drives the sort and the totals, defaultRoute only says which device the
+	// default route sits on, tunnel or not, which is what the IP line asks.
+	defaultTunnel bool
+	defaultRoute  bool
 }
 
 // NetworkHistory holds the global network usage history.

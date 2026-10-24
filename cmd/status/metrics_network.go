@@ -104,6 +104,7 @@ func (c *Collector) collectNetwork(now time.Time) []NetworkStatus {
 			TxRateMBs:     tx,
 			IP:            ifAddrs[cur.Name],
 			defaultTunnel: cur.Name == defaultInterface && isTunnelInterface(cur.Name),
+			defaultRoute:  cur.Name == defaultInterface,
 		})
 	}
 
