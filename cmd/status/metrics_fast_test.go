@@ -124,3 +124,55 @@ func TestCollectProcessesKeepsLiveProcessesWithCachedEnrichment(t *testing.T) {
 		t.Fatalf("expected live process alert data, got %#v", snapshot.ProcessAlerts)
 	}
 }
+
+// A transient process-collection failure must not blank the process card: the
+// previous full refresh's sample stays, while every other field of this refresh
+// stays fresh. The full path is the one that renders --json and --watch frames.
+func TestCollectFullKeepsLastProcessSampleWhenCollectionFails(t *testing.T) {
+	original := collectProcessesFunc
+	t.Cleanup(func() { collectProcessesFunc = original })
+
+	collector := NewCollector(ProcessWatchOptions{})
+	collector.cacheEnrichment(MetricsSnapshot{
+		TopProcesses:  []ProcessInfo{{PID: 4242, Name: "cached-process", CPU: 12.5}},
+		ProcessAlerts: []ProcessAlert{{PID: 4242, Name: "cached-process", CPU: 140, Threshold: 100, Window: "5m"}},
+		Thermal:       ThermalStatus{AdapterPower: 987654},
+		Sensors:       []SensorReading{{Label: "cached-sensor", Value: 42, Unit: "C"}},
+	})
+
+	collectProcessesFunc = func() ([]ProcessInfo, error) {
+		return nil, errors.New("simulated transient ps failure")
+	}
+
+	snapshot, err := collector.Collect()
+	if err == nil {
+		t.Fatal("Collect() error = nil, want the process failure reported")
+	}
+	if len(snapshot.TopProcesses) != 1 || snapshot.TopProcesses[0].PID != 4242 {
+		t.Fatalf("last process sample was dropped: %#v", snapshot.TopProcesses)
+	}
+	if len(snapshot.ProcessAlerts) != 1 || snapshot.ProcessAlerts[0].PID != 4242 {
+		t.Fatalf("last process alerts were dropped: %#v", snapshot.ProcessAlerts)
+	}
+
+	// The narrow half of the fix: the cached values of tasks that did run must
+	// not be copied over this refresh's own measurements.
+	if snapshot.Thermal.AdapterPower == 987654 {
+		t.Fatalf("cached thermal overwrote the fresh sample: %#v", snapshot.Thermal)
+	}
+	for _, sensor := range snapshot.Sensors {
+		if sensor.Label == "cached-sensor" {
+			t.Fatalf("cached sensors overwrote the fresh sample: %#v", snapshot.Sensors)
+		}
+	}
+
+	// The cache itself must not be overwritten by the failed frame, or the
+	// second frame would be empty and --watch would flicker.
+	second, err := collector.Collect()
+	if err == nil {
+		t.Fatal("second Collect() error = nil, want the process failure reported")
+	}
+	if len(second.TopProcesses) != 1 || second.TopProcesses[0].PID != 4242 {
+		t.Fatalf("process cache was overwritten by the first failed frame: %#v", second.TopProcesses)
+	}
+}

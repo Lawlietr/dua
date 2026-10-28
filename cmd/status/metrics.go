@@ -438,6 +438,19 @@ func (c *Collector) collectFull() (MetricsSnapshot, error) {
 	mergeErr := collectConcurrently(tasks...)
 
 	snapshot := c.snapshotFromMetrics(now, hostInfo, collected, true)
+	// A transient process-collection failure (`ps` timing out, a procfs race,
+	// a sandbox that forbids it) used to blank the process card even though the
+	// previous refresh had measured it, because this path never re-applies the
+	// cached enrichment. Only the process fields are restored: every other
+	// field of this snapshot was just collected fresh, and copying the whole
+	// enrichment would roll hardware, disks, thermal and sensors back to the
+	// previous refresh. The cache itself is left untouched below, since
+	// mergeErr is non-nil whenever the process task failed, so the last good
+	// sample survives instead of being overwritten by an empty one.
+	if !collected.hasProcesses && c.hasEnrichment {
+		snapshot.TopProcesses = slices.Clone(c.enrichment.topProcesses)
+		snapshot.ProcessAlerts = slices.Clone(c.enrichment.processAlerts)
+	}
 	if mergeErr == nil {
 		c.cacheEnrichment(snapshot)
 	}

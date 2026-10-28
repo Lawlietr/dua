@@ -223,7 +223,84 @@ This is the seed the shipped notes grew from. The published body (source of trut
 >
 > **Upgrading:** the `analyze` cache format went from v3 to v5 in this range, so the first scan of a tree after updating re-reads it — once; later scans are served from the new cache again. Downgrading stays safe: an older binary refuses the newer cache instead of misreading it.
 
-## P1 — Status: stale process data (small, self-contained)
+## Batch A — status: network card + process retention (worked 2026-10-28, branch `port/status-network`)
+
+Upstream had moved again since the 2026-10-09 audit: `upstream/main` is `45ee88cb`, and
+`git log b56f7561..upstream/main -- cmd/analyze/ cmd/status/` now reports **162** commits
+(157 non-merge) instead of 140 — **22** of them touch `cmd/analyze`/`cmd/status` after the
+old audit point `d917cb17`. 0 open PRs (re-checked with `gh pr list --repo tw93/Mole --state open`).
+Every candidate below was cost-probed with a real `git cherry-pick -x` in a throwaway worktree
+(`git worktree add --detach` → count `--diff-filter=U` → `--abort` → `worktree remove --force`);
+all worktrees were removed.
+
+| Card | Upstream | dua | Message | Est. → actual | Conflicts (probe) |
+|---|---|---|---|---|---|
+| `A-1` ☑ | `2a436ac9` | `00efb42c` | keep the idle routed interface inside the three-row cap | 30m → **3.5m** | 1 file, 1 marker (test only) |
+| `A-2` ☑ | `e94ab40b` | `1dee7fda` | show the routed interface's IP in the network card | 45m → **4m** | 2 files, 2 markers |
+| `P1-1` ☑ | `eb20146b` | `b2a3b966` | keep the last process sample when `ps` fails | 45m → **11m** | re-derivation, not a pick |
+| `P1-2` ⛔ | `390294d5` | — | mark stale process data in the TUI | 45m → **blocked, see below** | — |
+
+### Work log
+
+**`A-1` (3.5m).** The source hunk applied verbatim — dua already carries `defaultTunnel` and the
+same three-row cap. Only the *reason* is re-derived: upstream's comment is about Apple-silicon
+Thunderbolt ports preceding Wi-Fi `en0`; on Linux the ordering hazard is that `/sys/class/net`
+lists `docker0`/`br-*`/`veth*` before the NICs, and those names are **not** in dua's
+`noiseInterfacePrefixes` (`lo, awdl, utun, llw, bridge, gif, stf, xhc, anpi, ap`), so a container
+host spends cap slots on bridges. Measured on this host: 7 net devices, 4 of them counted.
+Fixture uses Linux names (`docker0, br-3f2a1c9d0b7e, veth4b21f9, eth0, eth1`, route on the idle
+`eth1`); upstream's `"en4,en5,en0"` expectation encodes macOS enumeration and does not transfer.
+3 mutation probes (loop dropped / guard never fires / loop scans only the kept rows) each red;
+the failure is deterministic for this input, and 20 repeats stay green with the fix in place.
+
+**`A-2` (4m).** The real defect: dua's IP line was `n.Name == "en0"`, which no Linux interface is
+named, so the network card **never printed an address**. Measured A/B through a pty on a host whose
+default route is `eth0` (192.168.1.15, plus `eth1` and `docker0`): the pre-fix build from `main`
+printed no address anywhere in the card; this build prints `192.168.1.15`. Two deliberate
+deviations, both recorded in the commit message: (1) upstream keeps an `en0` preference for the
+unknown-route case, a no-op here, so the fallback became platform-neutral — the busiest non-tunnel
+row, which the sample already sorts first — instead of putting a `GOOS` branch in the renderer;
+(2) the picked hunk inserted the routing hints above the exported fields while dua already carried
+`defaultTunnel` at the end of `NetworkStatus`, so the two hints are grouped there rather than
+duplicated. Two of upstream's four fixture expectations are `en0`-fallback cases and were replaced;
+the fixture is re-derived with `eth0/eth1/wg0` and adds a tunnel-only sample that must not leak the
+VPN address. 4 mutation probes (routed rule off, tunnel guard off, fallback off, collector not
+marking the hint) each turned a distinct assertion red. JSON contract verified unchanged from the
+built binary: `--json` still emits only `ip/name/rx_rate_mbs/tx_rate_mbs` per row.
+
+**`P1-1` (11m, ran over a 45m box because it was a re-derivation, not a pick).**
+The `P1` sizing is wrong in two ways. (1) `eb20146b` is not self-contained here: it lands inside
+upstream's `processEnrichment` / `hasProcessData` / `cacheProcessEnrichment` machinery and reads
+`MetricsSnapshot.ProcessCollectedAt` / `ProcessStale` / `ZombieCount` / `ZombieParents` — none of
+which exist in dua (grep: 0 hits each), and dua has no zombie accounting at all. (2) The dua-shaped
+fix is smaller and the symptom is real and measured: `collectFull` (the path that serves the
+dashboard's 30s full refresh) never re-applied the cached enrichment, so a failing `ps` blanked the
+process card — probed with a PATH-shadowing `ps` stub: a full `Collect()` returned `top_processes: 0`
+while `procs: 43` proved the process table was still readable. So the card restores **only** the two
+process fields from `c.enrichment`, because every other field of a full snapshot is fresh; copying
+the whole enrichment (the naive fix) would roll hardware, disks, thermal and sensors back to the
+previous refresh, and the new test pins exactly that with sentinel `Thermal`/`Sensors` values.
+What the test does **not** pin: the pre-existing `mergeErr == nil` guard on `cacheEnrichment` — a
+mutation that caches the failed frame anyway stays green, because the restore runs before the cache
+write and writes the same cached sample into it. Frame-to-frame retention is pinned (second
+`Collect()` still returns the sample), cache-write policy is not.
+Also measured so nobody re-tests it: `--watch` was never affected (its fast/process path already
+calls `applyEnrichment`), and single-shot `--json` has no shared cache, so the affected surface is
+the dashboard's periodic full refresh. A pty A/B on the TUI is **not** a usable instrument for this
+fix — bubbletea rewrites only changed cells, so grepping a pty log counts 2–3 hits regardless of
+whether the card blanked (tried twice, discarded); pin it at the collector layer instead.
+
+**`P1-2` — blocked, needs a decision, not a port.** `390294d5` renders staleness from the freshness
+two upstream commits add before it: `8893a29f` (2026-08-30, *expose process sample freshness* — adds
+the `process_collected_at` / `process_stale` JSON keys, 97 lines incl. README) and the zombie chain
+(`ZombieCount`/`ZombieParents`). `8893a29f` is dated before the 2026-10-09 audit, so it sat inside
+the untriaged 140-commit backlog and the `P1` cards never named it as a prerequisite — the reason
+the pair was sized at 45m each. Landing `P1-1` without any staleness marker was accepted only
+because dua keeps reporting `collected_at` per frame and the retained sample is at most one
+refresh stale; if the stale data is to be *marked*, that is a JSON contract addition (two keys, plus
+both READMEs' contract table, plus a minor version bump), so it is a product decision first.
+
+## P1 — Status: stale process data (small, self-contained) — **RE-SIZED 2026-10-28, see Batch A above**
 
 | Card | Commit | Message | Est. |
 |---|---|---|---|
