@@ -237,7 +237,7 @@ all worktrees were removed.
 |---|---|---|---|---|---|
 | `A-1` ☑ | `2a436ac9` | `00efb42c` | keep the idle routed interface inside the three-row cap | 30m → **3.5m** | 1 file, 1 marker (test only) |
 | `A-2` ☑ | `e94ab40b` | `1dee7fda` | show the routed interface's IP in the network card | 45m → **4m** | 2 files, 2 markers |
-| `P1-1` ☑ | `eb20146b` | `b2a3b966` | keep the last process sample when `ps` fails | 45m → **11m** | re-derivation, not a pick |
+| `P1-1` ☑ | `eb20146b` | `8e0ed8fa` | keep the last process sample when `ps` fails | 45m → **11m** | re-derivation, not a pick |
 | `P1-2` ⛔ | `390294d5` | — | mark stale process data in the TUI | 45m → **blocked, see below** | — |
 
 ### Work log
@@ -304,10 +304,14 @@ both READMEs' contract table, plus a minor version bump), so it is a product dec
 
 | Card | Commit | Message | Est. |
 |---|---|---|---|
-| `P1-1` ☐ | `eb20146b` | retain stale process samples (collection side) | 45m |
-| `P1-2` ☐ | `390294d5` | mark stale process data in the TUI (`cmd/status/view.go`) | 45m |
+| `P1-1` ☑ → closed in Batch A (`8e0ed8fa`, re-derived) | `eb20146b` | retain stale process samples (collection side) | ~~45m~~ → 11m actual |
+| `P1-2` ⛔ blocked on `8893a29f` (JSON contract addition) | `390294d5` | mark stale process data in the TUI (`cmd/status/view.go`) | re-size to ~2h incl. both READMEs, or decline |
 
 `P1-1` must land first; `P1-2` depends on it but is a separate commit — both are safe to stop between.
+**Correction (2026-10-28):** the pair is not self-contained. `P1-2` also needs `8893a29f`
+(*expose process sample freshness*, 2026-08-30), which adds the `process_collected_at` /
+`process_stale` JSON keys, and upstream's rendering half assumes zombie accounting dua does not
+collect. See the Batch A work log above.
 
 ## P2 — Analyze: local snapshots
 
