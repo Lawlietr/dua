@@ -514,6 +514,47 @@ holds **162** commits (157 non-merge + 5 merge), and `d917cb17..upstream/main` o
 same paths holds **22**. Open upstream PRs: **0** (`gh pr list --repo tw93/Mole --state
 open`).
 
+## v0.4.0 — release decision, procedure, and what the published assets prove (2026-10-30)
+
+### Why a minor bump, not a patch
+
+AGENTS.md: bump the patch for fixes/docs/chores, the minor only for new features or behavior changes. `v0.3.0..3ce92edf` holds 12 commits, 6 of them docs/chores and 6 code fixes, and three of the six change what the user sees:
+
+| commit | upstream | what changed | measured |
+|---|---|---|---|
+| `b810315c` | `6307d735` | a browsed directory keeps every child listed and enterable | 120-child directory: held rows 30 → 120; filter `dir-10` finds 10 matches instead of 3 |
+| `347b23cf` | `e6b94dc8` | a changed directory is re-measured on the next browse | same `HOME`, two browses: pre-fix rewrote nothing, released build rewrote the cache entry (mtime + md5) |
+| `1dee7fda` | `e94ab40b` | the network card draws the routed interface's IPv4 | lines carrying an IPv4 on the rendered screen: 0 → 8 |
+
+The other three are pure fixes (`00efb42c` idle routed NIC inside the three-row cap, `8e0ed8fa` process card keeps its last good sample, `0135dee3` unit alignment on lower-bound rows). The batch also bumps the analyze cache schema 5 → 6, which is an on-disk format change users pay for with one re-scan per tree. `v1.0.0` is excluded: no stability promise is being made.
+
+### Procedure — executed 2026-10-30
+
+1. `git push origin main` (`d2dee131..3ce92edf`), then `test.yml` green on the new tip: run `41029117311`, 32s. Tagging happens **after** that run, per the rule in AGENTS.md.
+2. `git tag -a v0.4.0 -m '...' 3ce92edf` and `git push origin v0.4.0` → `release.yml` run `41029217609` (52s), release id `428815511`, 4 linux assets.
+3. `gh workflow run upload-darwin --repo Lawlietr/dua --ref v0.4.0 -f ref=v0.4.0 -f version=v0.4.0 -f confirm_tag=v0.4.0` → run `41029372927`: cross-compile, **macos-14 smoke job green**, attach. 6 assets.
+4. Body written last, by hand (below).
+
+### Release record (as published, verified from the downloaded assets — not from the local build)
+
+- `https://github.com/Lawlietr/dua/releases/tag/v0.4.0`, tag object on `3ce92edf`.
+- sha256 recomputed locally from the downloaded tarballs and matched against each published `.sha256`: `75a58601a7f4d59a…` amd64, `e0914f7db51f2f14…` arm64, `bdecc735bd867014…` darwin.
+- From the extracted linux tarball: `version: v0.4.0`, `commit: 3ce92edfd31690b57b328470117bb1a72590e029`; `--json /etc` = 194 rows / 1,387,786 B / 796 files / `scan_status: complete`, byte-identical to the pre-release build.
+- Functional check on the **published** artifact: filter over the 120-child fixture reports **120** matches (the pre-release build reports 30), so the released binary carries `L-3`.
+- The darwin artifact cannot be executed here, so its identity came from its embedded strings: `v0.4.0` and the tag commit — because `ref` was dispatched on the tag, not on `main`.
+- `releases/latest` serves v0.4.0 and all three `releases/latest/download/<asset>` URLs return 200, which is the trap AGENTS.md warns about: a release without darwin assets breaks the macOS install line in both READMEs.
+
+### Two release-side traps found while doing this, both new
+
+1. **`gh` without `--repo` resolves to the upstream repo on this machine.** `gh repo view` answered `tw93/Mole`, and `gh run list --branch main` listed workflows named Nix / Check / Validation that dua does not have. Every release command must name `--repo Lawlietr/dua`, or a dispatch/release could land on the upstream project.
+2. **The hand-written body has to be PATCHed to `/repos/{owner}/{repo}/releases/{release_id}`** — `PATCH .../releases/tags/{tag}` answers 404 — and it has to be written **after** `upload-darwin` finishes, carrying that workflow's `### macOS (Apple Silicon) - experimental` section verbatim at the end. Writing the body first and letting the workflow rewrite it also works, but the ordering is a race; the safe order is: let the workflow append, read the body back, splice your own text before that heading, patch once.
+
+### Three probe-surface traps, measured rather than assumed (they cost real time)
+
+- `analyze --json` lists every child in **both** builds (120 and 120): the 30-row cap lived only in the interactive listing, so a JSON diff shows nothing and would have misled the check.
+- `status --watch` cannot show the process-sample fix: the stream uses the fast collection path, where both builds already reuse the cached sample. The fix lives in the dashboard's 30-second full refresh and is pinned only by `TestCollectFullKeepsLastProcessSampleWhenCollectionFails`.
+- The analyze TUI exits at once without a terminal (rc=1) and writes no cache, so a scripted check that runs it with stdout redirected silently compares two empty states. Wrap the browse in `script -qec '…' /dev/null` and assert that the cache file exists before claiming anything. Related: as root, `chmod 000` blocks nothing and `unshare -U -r` keeps the privileges — use a real unprivileged user (or `setpriv --reuid=65534 …`, with the binary and the fixture world-readable, since `/root` is mode 700 and nobody cannot even exec from it).
+
 ## SKIP — Mole-specific / macOS / cleanup (not dua scope)
 
 dua is read-only and Linux-first. Do NOT port these:
