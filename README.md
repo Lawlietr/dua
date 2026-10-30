@@ -90,7 +90,7 @@ Shows version and commit information.
 
 Checks GitHub for a newer release and updates in-place (downloads tarball, verifies SHA-256, replaces binaries). Run with `sudo` if installed in a system directory.
 
-dua v0.3.0 changed the `analyze` cache format so a cached measurement keeps its coverage marker. Updating from an earlier release therefore costs one re-scan per tree: the first scan of a directory after updating re-reads it, later scans are served from the new cache again.
+dua v0.3.0 changed the `analyze` cache format so a cached measurement keeps its coverage marker, and v0.4.0 changed it again (schema 5 → 6) so a stored directory listing says when it is bounded instead of claiming to be complete. Updating across either change costs one re-scan per tree: the first scan of a directory after updating re-reads it, later scans are served from the new cache again.
 
 ## How it Works
 
