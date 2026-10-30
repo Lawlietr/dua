@@ -380,8 +380,8 @@ These are independent of the P0 chain except for the `cache.go` hotspot; take th
 ## Batch B — analyze listing correctness (2026-10-28, done)
 
 Branch `port/analyze-listing`, off `main` = `d2dee131`, rebased onto Batch A
-(`port/status-network` = `ab637eaf`) before merging, so the two batches land as a linear
-history. Chosen from the 2026-10-28
+(`port/status-network` = `ab637eaf`) before merging on 2026-10-30, so the two batches
+landed as a linear history. Chosen from the 2026-10-28
 re-audit (`upstream/main` = `45ee88cb`, 22 commits touching `cmd/analyze`/
 `cmd/status` since `d917cb17`): the three that change what a user can see in the
 analyze listing. Card ids here are `L-*` to avoid colliding with the `A-*`/`B-*`/
@@ -424,8 +424,8 @@ and was noise — re-measure before quoting a cost). Test re-derivation: dua had
 pinning the old policy from both sides, both replaced. 4 mutation probes, 3 red, one
 recorded as unpinned (sub-second mtime slop).
 
-`L-3` (upstream `6307d735`; the dua commit is the last one of the batch — its own
-hash cannot be written inside itself, so it is recorded in the merge note below, and
+`L-3` (dua `b810315c`, upstream `6307d735`; the hash was recorded in the merge note
+below rather than in the commit itself, because a commit cannot name its own hash, and
 its message carries `Upstream: 6307d735`) — the live scan
 cut the finished listing to `maxEntries` (30) rows, so in a directory with more
 children the rest were
@@ -495,11 +495,11 @@ sides (`scan_status`, `+`, `739.6 MB+`, `--`, `--`, `partial`, `30`, `--json`, `
 
 ### State of the branches after Batch B
 
-**Merge record (2026-10-28).** Batch A landed first: `main` fast-forwarded from
+**Merge record (2026-10-30; the three cards landed 2026-10-28).** Batch A landed first: `main` fast-forwarded from
 `d2dee131` to `ab637eaf`. Batch B was then rebased onto that (`git rebase --onto
 port/status-network d2dee131 port/analyze-listing`), which rewrote the three card
-commits — pre-rebase `5c637ff8`/`e095afec`/`621cc33e` became `0135dee3`/`347b23cf`/
-`L-3` — and `main` was fast-forwarded again. Only AGENTS.md conflicted (the decision
+commits — pre-rebase `5c637ff8`/`e095afec`/`621cc33e` became `0135dee3` (`L-1`), `347b23cf`
+(`L-2`) and `b810315c` (`L-3`) — and `main` was fast-forwarded again. Only AGENTS.md conflicted (the decision
 log, where both batches insert rows, and the Next Steps list); TODO.md merged cleanly
 and needed only factual follow-through: the branch-status paragraph above, the two
 post-rebase hashes, and the `P3'` Next-Steps line, which this batch closes. The code
